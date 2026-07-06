@@ -9,9 +9,7 @@ class Claudex < Formula
   desc "Menu-bar app showing Claude and Codex usage across multiple logins"
   homepage "https://github.com/everlof/claudex"
   url "https://github.com/everlof/claudex/archive/refs/tags/v1.0.0.tar.gz"
-  # sha256 is filled in when the release tarball exists:
-  #   curl -sL <url> | shasum -a 256
-  sha256 :no_check
+  sha256 "c6a79a21e712a865abcd2d35cb9e16ce4cca47e658ab25e94a523e1294c921ea"
   license "MIT"
   head "https://github.com/everlof/claudex.git", branch: "main"
 
