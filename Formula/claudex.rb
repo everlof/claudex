@@ -3,7 +3,7 @@
 # This lives in the everlof/homebrew-tap repository (as Formula/claudex.rb). A copy is
 # kept here for reference. To install:
 #
-#   brew install --no-quarantine everlof/tap/claudex
+#   brew install everlof/tap/claudex
 #
 class Claudex < Formula
   desc "Menu-bar app showing Claude and Codex usage across multiple logins"
