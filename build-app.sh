@@ -33,11 +33,14 @@ cp "$ROOT/Resources/Info.plist" "$BUNDLE/Contents/Info.plist"
 # the user only has to click "Always Allow" once.
 #
 # Override with CLAUDEX_SIGN_ID="Apple Development: Your Name (TEAMID)"; otherwise we pick
-# the first available Apple Development identity, falling back to ad-hoc.
+# the first available Apple Development identity, falling back to ad-hoc. Set
+# CLAUDEX_ADHOC_SIGN=1 to force ad-hoc (used by the Homebrew build, whose sandbox blocks
+# keychain access that Developer-identity signing needs).
 SIGN_ID="${CLAUDEX_SIGN_ID:-}"
-if [ -z "$SIGN_ID" ]; then
+if [ -z "$SIGN_ID" ] && [ "${CLAUDEX_ADHOC_SIGN:-0}" != "1" ]; then
+    # `|| true` so a sandbox that blocks keychain access can't abort us under `set -e`.
     SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep -o '"Apple Development: [^"]*"' | head -1 | tr -d '"')"
+        | grep -o '"Apple Development: [^"]*"' | head -1 | tr -d '"' || true)"
 fi
 
 # The apple-events entitlement is required under the hardened runtime to send Apple

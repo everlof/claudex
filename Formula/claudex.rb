@@ -20,6 +20,10 @@ class Claudex < Formula
     # SwiftPM does its own sandboxing, which collides with Homebrew's build sandbox
     # ("sandbox_apply: Operation not permitted"). Disable SwiftPM's sandbox for the build.
     ENV["CLAUDEX_SWIFT_FLAGS"] = "--disable-sandbox"
+    # Homebrew's sandbox blocks the keychain access that Developer-identity signing needs,
+    # so ad-hoc sign. (The app still works; macOS just re-prompts for keychain access if
+    # the app is later rebuilt.)
+    ENV["CLAUDEX_ADHOC_SIGN"] = "1"
 
     # Build the release binary and assemble the signed .app bundle.
     system "./build-app.sh", "release"
