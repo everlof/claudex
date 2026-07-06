@@ -1,0 +1,12 @@
+# Swift build products
+.build/
+*.swiftpm
+
+# Assembled / signed app bundle (produced by build-app.sh)
+Claudex.app/
+
+# Claude Code local settings (per-machine permission grants)
+.claude/settings.local.json
+
+# macOS
+.DS_Store

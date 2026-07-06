@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Claudex</string>
+    <key>CFBundleDisplayName</key>
+    <string>Claudex</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.everlof.claudex</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>Claudex</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- Agent app: lives in the menu bar only, no Dock icon, no main window. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Claude + Codex usage at a glance.</string>
+    <!-- Needed to ask Terminal/iTerm for the frontmost tab's tty, so the menu bar can
+         show the usage of the account you're actively working in. -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Claudex reads the frontmost terminal tab to show the usage of the Claude/Codex account you're currently working in.</string>
+</dict>
+</plist>
