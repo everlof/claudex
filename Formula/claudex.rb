@@ -8,8 +8,8 @@
 class Claudex < Formula
   desc "Menu-bar app showing Claude and Codex usage across multiple logins"
   homepage "https://github.com/everlof/claudex"
-  url "https://github.com/everlof/claudex/archive/refs/tags/v1.0.0.tar.gz"
-  sha256 "c6a79a21e712a865abcd2d35cb9e16ce4cca47e658ab25e94a523e1294c921ea"
+  url "https://github.com/everlof/claudex/archive/refs/tags/v1.0.1.tar.gz"
+  sha256 "6d0d511f17d05c9018142a1c317fb5fe5f99162b142015c2fd09b53a85808cfc"
   license "MIT"
   head "https://github.com/everlof/claudex.git", branch: "main"
 
