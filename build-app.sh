@@ -11,10 +11,13 @@ APP_NAME="Claudex"
 BUNDLE="$ROOT/$APP_NAME.app"
 CONFIG="${1:-release}"
 
-echo "▸ Building ($CONFIG)…"
-swift build -c "$CONFIG"
+# Extra flags for `swift build`, e.g. --disable-sandbox when building under Homebrew.
+SWIFT_FLAGS="${CLAUDEX_SWIFT_FLAGS:-}"
 
-BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)"
+echo "▸ Building ($CONFIG)…"
+swift build -c "$CONFIG" $SWIFT_FLAGS
+
+BIN_PATH="$(swift build -c "$CONFIG" $SWIFT_FLAGS --show-bin-path)"
 
 echo "▸ Assembling $APP_NAME.app…"
 rm -rf "$BUNDLE"

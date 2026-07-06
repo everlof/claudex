@@ -40,11 +40,11 @@ Claudex control Terminal/iTerm — click **Allow**. Terminals without scriptable
 ### Homebrew
 
 ```sh
-brew install --no-quarantine everlof/tap/claudex
+brew install everlof/tap/claudex
 ```
 
-This builds Claudex from source and installs `Claudex.app` into your Homebrew prefix
-(`$(brew --prefix)/opt/claudex/Claudex.app`). Launch it with:
+This builds Claudex from source and installs `Claudex.app` into your Homebrew prefix.
+Launch it with:
 
 ```sh
 open "$(brew --prefix)/opt/claudex/Claudex.app"
@@ -57,9 +57,8 @@ Login Items**, or link it into `/Applications`:
 ln -sf "$(brew --prefix)/opt/claudex/Claudex.app" /Applications/Claudex.app
 ```
 
-> `--no-quarantine` skips Gatekeeper's quarantine flag since the app is built locally and
-> ad-hoc signed. Omit it if you prefer, and approve the app in **System Settings →
-> Privacy & Security** on first launch.
+Because it's built locally and ad-hoc signed, macOS asks on first launch to allow the app
+to read the keychain (your Claude logins). Click **Always Allow**.
 
 ### From source
 

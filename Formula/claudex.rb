@@ -14,10 +14,13 @@ class Claudex < Formula
   head "https://github.com/everlof/claudex.git", branch: "main"
 
   depends_on xcode: ["16.0", :build]
-  depends_on :macos
   depends_on macos: :sonoma # macOS 14+
 
   def install
+    # SwiftPM does its own sandboxing, which collides with Homebrew's build sandbox
+    # ("sandbox_apply: Operation not permitted"). Disable SwiftPM's sandbox for the build.
+    ENV["CLAUDEX_SWIFT_FLAGS"] = "--disable-sandbox"
+
     # Build the release binary and assemble the signed .app bundle.
     system "./build-app.sh", "release"
 
