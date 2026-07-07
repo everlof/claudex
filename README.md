@@ -29,17 +29,22 @@ it only calls the same read-only usage endpoints the official tools use.
 
 ### Frontmost account tracking
 
-When a **Claude or Codex session is the frontmost window** (in Terminal or iTerm2), the
-menu bar switches from the global peak to *that account's* usage — a provider-tinted
-gauge plus its **5-hour / weekly** percentages (e.g. `35% / 41%`), and the matching card
-is highlighted in the panel. Switch to a tab running a different account and it updates
-within ~2s. When nothing detectable is frontmost, it falls back to the global peak.
+When a **Claude or Codex session is the frontmost window**, the menu bar switches from
+the global peak to *that account's* usage — a provider-tinted gauge plus its **5-hour /
+weekly** percentages (e.g. `35% / 41%`), and the matching card is highlighted in the
+panel. Switch to a window running a different account and it updates within ~2s. When
+nothing detectable is frontmost, it falls back to the global peak.
 
-How it works (all local, only your own processes): the frontmost app → its frontmost
-tab's tty (via Apple Events) → the `claude`/`codex` process on that tty → its
-`CLAUDE_CONFIG_DIR` / `CODEX_HOME` env → the account. On first use macOS asks to let
-Claudex control Terminal/iTerm — click **Allow**. Terminals without scriptable ttys
-(the Codex desktop app, VS Code's integrated terminal) simply fall back to the peak.
+Two kinds of frontmost session are recognised (all local, only your own processes):
+
+- **Terminal sessions** (Terminal or iTerm2): the frontmost tab's tty (via Apple Events)
+  → the `claude`/`codex` process on it → its `CLAUDE_CONFIG_DIR` / `CODEX_HOME` env → the
+  account. On first use macOS asks to let Claudex control Terminal/iTerm — click **Allow**.
+- **Desktop apps** (the **Codex** and **Claude** apps): these have no tty, so Claudex
+  reads the app's *active login* from its own on-disk state and matches it to the account.
+
+VS Code's integrated terminal has no scriptable tty and no on-disk signal, so it falls
+back to the peak.
 
 ## Install
 
