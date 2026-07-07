@@ -13,18 +13,12 @@ final class HistoryStore {
     /// True when ccusage isn't installed — the view shows a hint instead of an empty chart.
     private(set) var ccusageMissing = false
 
-    /// The compact panel chart's span — a short slice of the daily data, independent of the
-    /// full view's granularity so the two don't fight over one selection.
-    enum CompactSpan: Sendable { case day, week }
-
     // User selections. Granularity triggers a fetch; the others are pure view state.
     var granularity: HistoryGranularity = .daily {
         didSet { if granularity != oldValue { Task { await load(force: false) } } }
     }
     var metric: HistoryMetric = .cost
     var breakdown: HistoryBreakdown = .provider
-    /// Compact-view span (panel top). Pure view state — reuses the cached daily snapshot.
-    var compactSpan: CompactSpan = .week
 
     private let service = UsageHistoryService()
     private let accountsProvider: @MainActor () -> [AccountRef]
@@ -42,10 +36,9 @@ final class HistoryStore {
         cache[.daily] ?? (granularity == .daily ? history : .empty)
     }
 
-    /// The daily data filtered to the compact span (last 1 or 7 days), always by model.
+    /// The daily data filtered to the last 7 days, always by model — the compact panel chart.
     func compactData(metric: HistoryMetric) -> [UsageHistory.Datum] {
-        let days = compactSpan == .day ? 1 : 7
-        let cutoff = Calendar.current.date(byAdding: .day, value: -(days), to: Date()) ?? .distantPast
+        let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? .distantPast
         return dailyHistory.data(breakdown: .model, metric: metric).filter { $0.date >= cutoff }
     }
     func compactSeries(metric: HistoryMetric) -> [UsageHistory.Series] {

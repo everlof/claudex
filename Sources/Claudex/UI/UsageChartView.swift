@@ -52,7 +52,7 @@ struct UsageChartView: View {
     private var compactHeader: some View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Usage · \(spanLabel)")
+                Text("Usage · last 7 days")
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
@@ -62,13 +62,7 @@ struct UsageChartView: View {
                     .contentTransition(.numericText())
             }
             Spacer()
-            Picker("", selection: $store.compactSpan) {
-                Text("24h").tag(HistoryStore.CompactSpan.day)
-                Text("Week").tag(HistoryStore.CompactSpan.week)
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .labelsHidden()
+            metricToggle
             Button {
                 onBreakout?()
             } label: {
@@ -79,10 +73,6 @@ struct UsageChartView: View {
             .buttonStyle(.plain)
             .help("Open usage history")
         }
-    }
-
-    private var spanLabel: String {
-        store.compactSpan == .day ? "last 24h" : "last 7 days"
     }
 
     // MARK: Hero + controls
@@ -198,12 +188,28 @@ struct UsageChartView: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                AxisValueLabel(format: xAxisFormat).font(.system(size: 9))
+            // Ticks anchored to actual bucket dates (thinned to avoid crowding), so labels
+            // never repeat or drift off the bars the way `.automatic` can.
+            AxisMarks(values: xAxisTicks) { value in
+                if let d = value.as(Date.self) {
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
+                    AxisValueLabel {
+                        Text(d, format: xAxisFormat).font(.system(size: 9))
+                    }
+                }
             }
         }
         .chartXSelection(value: $hoveredDate)
         .frame(height: isCompact ? 92 : 150)
+    }
+
+    /// Distinct bucket dates in the data, thinned so at most ~6 labels show — anchoring ticks
+    /// to real buckets is what stops the repeated "Jul 7"/misaligned labels.
+    private var xAxisTicks: [Date] {
+        let dates = Array(Set(data.map(\.date))).sorted()
+        guard dates.count > 6 else { return dates }
+        let stride = Int((Double(dates.count) / 6).rounded(.up))
+        return dates.enumerated().compactMap { $0.offset % stride == 0 ? $0.element : nil }
     }
 
     private var barUnit: Calendar.Component {
@@ -221,6 +227,24 @@ struct UsageChartView: View {
         }
     }
 
+    /// The exact, unambiguous period label shown in the hover tooltip. Daily shows the full
+    /// weekday+date; weekly shows the 7-day range; monthly the month + year. The compact
+    /// chart is always daily, so hovering a bar names the precise day.
+    private func tooltipDateLabel(_ date: Date) -> String {
+        let g: HistoryGranularity = isCompact ? .daily : store.granularity
+        switch g {
+        case .daily:
+            return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+        case .weekly:
+            let end = Calendar.current.date(byAdding: .day, value: 6, to: date) ?? date
+            let s = date.formatted(.dateTime.month(.abbreviated).day())
+            let e = end.formatted(.dateTime.month(.abbreviated).day())
+            return "\(s) – \(e)"
+        case .monthly:
+            return date.formatted(.dateTime.month(.wide).year())
+        }
+    }
+
     private func hoverTotal(_ date: Date) -> Double? {
         let cal = Calendar.current
         let matching = data.filter { cal.isDate($0.date, equalTo: date, toGranularity: barUnit) }
@@ -230,22 +254,25 @@ struct UsageChartView: View {
 
     private func hoverTooltip(date: Date, total: Double) -> some View {
         let cal = Calendar.current
-        let rows = data
+        let matching = data
             .filter { cal.isDate($0.date, equalTo: date, toGranularity: barUnit) && $0.value > 0 }
             .sorted { $0.value > $1.value }
+        // Header from the matched bucket's own start date, not the raw hover position, so a
+        // weekly/monthly bucket reads as its real period.
+        let bucketDate = matching.first?.date ?? date
         return VStack(alignment: .leading, spacing: 3) {
-            Text(date, format: xAxisFormat)
+            Text(tooltipDateLabel(bucketDate))
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-            ForEach(rows) { r in
+            ForEach(matching) { r in
                 HStack(spacing: 5) {
                     Circle().fill(colors[r.series] ?? .gray).frame(width: 6, height: 6)
-                    Text(r.series).font(.system(size: 10))
+                    Text(legendLabel(r.series)).font(.system(size: 10))
                     Spacer(minLength: 8)
                     Text(formatValue(r.value)).font(.system(size: 10, weight: .medium).monospacedDigit())
                 }
             }
-            if rows.count > 1 {
+            if matching.count > 1 {
                 Divider()
                 HStack {
                     Text("Total").font(.system(size: 10, weight: .semibold))
