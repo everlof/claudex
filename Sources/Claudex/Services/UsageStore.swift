@@ -88,6 +88,12 @@ final class UsageStore {
             notifyLongWindow = defaults.bool(forKey: "notifyLongWindow")
         }
         rediscover()
+        // Test hook: CLAUDEX_FORCE_FRONTMOST=<handle> pins a frontmost account so the panel's
+        // auto-scroll-to-frontmost can be exercised without a live terminal session.
+        if let handle = ProcessInfo.processInfo.environment["CLAUDEX_FORCE_FRONTMOST"],
+           let match = entries.first(where: { $0.ref.handle == handle }) {
+            frontmostAccountID = match.ref.id
+        }
     }
 
     /// Re-scan the machine for accounts, preserving any already-loaded state for
@@ -124,6 +130,8 @@ final class UsageStore {
     /// and `ps`, so it runs off the main actor; results are hopped back on.
     func startFrontmostTracking() {
         guard frontmostTask == nil else { return }
+        // When a frontmost account is pinned for testing, don't let the poll overwrite it.
+        guard ProcessInfo.processInfo.environment["CLAUDEX_FORCE_FRONTMOST"] == nil else { return }
         frontmostTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {

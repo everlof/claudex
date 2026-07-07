@@ -50,13 +50,18 @@ struct UsageChartView: View {
     // MARK: Compact header (panel top) — hero total, span toggle, breakout
 
     private var compactHeader: some View {
-        HStack(alignment: .center, spacing: 8) {
+        // The tiny compact chart has no room for a floating tooltip, so hovering a bar
+        // updates this header instead (day + that day's total); no hover shows the summary.
+        let hovered = hoveredDate.flatMap { d -> (label: String, total: Double)? in
+            guard let total = hoverTotal(d) else { return nil }
+            return (tooltipDateLabel(d), total)
+        }
+        return HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Usage · last 7 days")
+                Text(hovered.map { $0.label.uppercased() } ?? "USAGE · LAST 7 DAYS")
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                Text(heroValue)
+                Text(hovered.map { formatValue($0.total) } ?? heroValue)
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(.primary)
                     .contentTransition(.numericText())
@@ -167,8 +172,14 @@ struct UsageChartView: View {
             if let hoveredDate, let total = hoverTotal(hoveredDate) {
                 RuleMark(x: .value("Date", hoveredDate, unit: barUnit))
                     .foregroundStyle(Color.primary.opacity(0.18))
-                    .annotation(position: .top, overflowResolution: .init(x: .fit, y: .disabled)) {
-                        hoverTooltip(date: hoveredDate, total: total)
+                    .annotation(
+                        position: .top,
+                        // The full window has room above the plot; fit horizontally so it
+                        // never spills off the sides. Compact shows the hover in its header
+                        // instead (no room for a floating tooltip), so skip it there.
+                        overflowResolution: .init(x: .fit(to: .chart), y: .disabled)
+                    ) {
+                        if !isCompact { hoverTooltip(date: hoveredDate, total: total) }
                     }
             }
         }

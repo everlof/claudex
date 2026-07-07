@@ -18,29 +18,41 @@ struct MenuContent: View {
             if store.entries.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    VStack(spacing: 10) {
-                        UsageChartView(
-                            store: store.history,
-                            mode: .compact,
-                            onBreakout: { UsageHistoryWindow.show(store: store.history) }
-                        )
-                        .padding(.horizontal, 12)
-                        .padding(.top, 10)
-                        Divider().opacity(0.4)
-                        ForEach(store.entries) { entry in
-                            AccountCard(
-                                entry: entry,
-                                now: now,
-                                isFrontmost: entry.ref.id == store.frontmostAccountID,
-                                onRetryAccess: { store.refreshNow() }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            UsageChartView(
+                                store: store.history,
+                                mode: .compact,
+                                onBreakout: { UsageHistoryWindow.show(store: store.history) }
                             )
+                            .padding(.horizontal, 12)
+                            .padding(.top, 10)
+                            Divider().opacity(0.4)
+                            ForEach(store.entries) { entry in
+                                AccountCard(
+                                    entry: entry,
+                                    now: now,
+                                    isFrontmost: entry.ref.id == store.frontmostAccountID,
+                                    onRetryAccess: { store.refreshNow() }
+                                )
+                                .id(entry.ref.id)
+                            }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 12)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 12)
+                    .frame(maxHeight: maxContentHeight)
+                    // Bring the detected frontmost account into view — on open, and whenever
+                    // the frontmost account changes while the panel is showing. Keyed on the
+                    // id (and the loaded-entry count) so it re-runs once the list has laid
+                    // out, which the raw `.onAppear` misses if content isn't sized yet.
+                    .task(id: scrollTrigger) {
+                        // Let the list finish laying out before scrolling.
+                        try? await Task.sleep(for: .milliseconds(120))
+                        scrollToFrontmost(proxy, animated: true)
+                    }
                 }
-                .frame(maxHeight: maxContentHeight)
             }
 
             Divider().opacity(0.4)
@@ -49,6 +61,25 @@ struct MenuContent: View {
         .frame(width: 340)
         .background(panelBackground)
         .onReceive(tick) { now = $0 }
+    }
+
+    /// Re-runs the scroll when either the frontmost account or the set of loaded accounts
+    /// changes (the latter covers first data load, when card heights become real).
+    private var scrollTrigger: String {
+        "\(store.frontmostAccountID ?? "none")-\(store.entries.count)"
+    }
+
+    /// Scroll the detected frontmost account's card into view, if one is known and loaded.
+    /// No-op when nothing is frontmost, so the list stays at the top (chart first). On open
+    /// the jump is unanimated (it should just already be there); a live change animates.
+    private func scrollToFrontmost(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard let id = store.frontmostAccountID,
+              store.entries.contains(where: { $0.ref.id == id }) else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+        } else {
+            proxy.scrollTo(id, anchor: .center)
+        }
     }
 
     // MARK: Header
