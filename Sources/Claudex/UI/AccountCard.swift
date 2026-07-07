@@ -8,6 +8,9 @@ struct AccountCard: View {
     /// True when this account is running in the frontmost window — gets a highlight so
     /// it's clear which account the menu-bar number refers to.
     var isFrontmost: Bool = false
+    /// Retries a denied keychain read (re-triggers the macOS consent prompt). Only the
+    /// `keychainDenied` error shows the button; nil hides it.
+    var onRetryAccess: (() -> Void)? = nil
 
     private var provider: Provider { entry.ref.provider }
 
@@ -48,7 +51,7 @@ struct AccountCard: View {
                     Text(provider.displayName)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
-                    Text(entry.ref.handle)
+                    Text(DemoMode.handle(entry.ref.handle, id: entry.ref.id))
                         .font(.system(size: 11, weight: .regular, design: .monospaced))
                         .foregroundStyle(.secondary)
                     if isFrontmost {
@@ -78,7 +81,7 @@ struct AccountCard: View {
     }
 
     private var subtitle: String? {
-        entry.state.value?.displayName
+        DemoMode.displayName(entry.state.value?.displayName, id: entry.ref.id)
     }
 
     // MARK: Content — one branch per state
@@ -108,7 +111,7 @@ struct AccountCard: View {
 
     private func errorRow(_ error: UsageError) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
+            Image(systemName: error == .keychainDenied ? "lock.fill" : "exclamationmark.triangle.fill")
                 .font(.system(size: 12))
                 .foregroundStyle(Severity.warning.color)
             VStack(alignment: .leading, spacing: 2) {
@@ -120,6 +123,13 @@ struct AccountCard: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+                if error == .keychainDenied, let onRetryAccess {
+                    Button("Grant access…", action: onRetryAccess)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .padding(.top, 3)
                 }
             }
             Spacer()

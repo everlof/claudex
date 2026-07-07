@@ -132,8 +132,11 @@ enum CredentialStore {
     static func readToken(for ref: AccountRef) throws(UsageError) -> Token {
         switch ref.source {
         case let .claudeKeychain(service, _):
-            guard let raw = Keychain.read(service: service) else {
-                throw .noCredential
+            let raw: String
+            switch Keychain.read(service: service) {
+            case let .found(text): raw = text
+            case .denied: throw .keychainDenied
+            case .missing: throw .noCredential
             }
             guard let data = raw.data(using: .utf8),
                   let cred = try? JSONDecoder().decode(ClaudeCredential.self, from: data),
@@ -188,14 +191,34 @@ enum Keychain {
         return status == errSecSuccess
     }
 
-    static func read(service: String) -> String? {
+    /// Outcome of a secret read. "Denied" is kept distinct from "missing" so callers can
+    /// stop re-triggering the macOS consent prompt instead of treating a user's "Deny"
+    /// as an absent login.
+    enum ReadResult {
+        case found(String)
+        /// The item exists but macOS refused to hand over the data — the user clicked
+        /// "Deny" / cancelled the ACL prompt, or the dialog couldn't be shown.
+        case denied
+        case missing
+    }
+
+    static func read(service: String) -> ReadResult {
         var query = baseQuery(service: service)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data, let text = String(data: data, encoding: .utf8) else {
+                return .missing
+            }
+            return .found(text)
+        case errSecAuthFailed, errSecUserCanceled, errSecInteractionNotAllowed:
+            return .denied
+        default:
+            return .missing
+        }
     }
 
     private static func baseQuery(service: String) -> [String: Any] {

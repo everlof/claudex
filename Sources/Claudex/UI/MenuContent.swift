@@ -21,7 +21,8 @@ struct MenuContent: View {
                             AccountCard(
                                 entry: entry,
                                 now: now,
-                                isFrontmost: entry.ref.id == store.frontmostAccountID
+                                isFrontmost: entry.ref.id == store.frontmostAccountID,
+                                onRetryAccess: { store.refreshNow() }
                             )
                         }
                     }
@@ -66,6 +67,45 @@ struct MenuContent: View {
             }
 
             Spacer()
+
+            Menu {
+                Picker("Menu bar shows", selection: $store.menuBarSubject) {
+                    ForEach(MenuBarSubject.allCases) { subject in
+                        Text(subject.displayName).tag(subject)
+                    }
+                }
+                .pickerStyle(.inline)
+                Picker("Style", selection: $store.menuBarStyle) {
+                    ForEach(MenuBarStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
+                Menu("Notifications") {
+                    Toggle("Notify when a window resets", isOn: $store.notifyOnReset)
+                    Picker("For usage above", selection: $store.notifyThreshold) {
+                        Text("Any usage").tag(0.0)
+                        Text("50%").tag(0.5)
+                        Text("75%").tag(0.75)
+                        Text("85%").tag(0.85)
+                        Text("95%").tag(0.95)
+                    }
+                    .disabled(!store.notifyOnReset)
+                    Toggle("5-hour window", isOn: $store.notifyShortWindow)
+                        .disabled(!store.notifyOnReset)
+                    Toggle("Weekly window", isOn: $store.notifyLongWindow)
+                        .disabled(!store.notifyOnReset)
+                }
+            } label: {
+                Image(systemName: "switch.2")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Menu bar appearance")
 
             Button {
                 store.refreshNow()

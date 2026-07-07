@@ -4,22 +4,39 @@ import AppKit
 /// Figures out which account (if any) is running in the frontmost window, so the menu
 /// bar can show *that* account's usage instead of the global peak.
 ///
-/// The detection chain (all local, only the user's own processes):
-///   1. `NSWorkspace` → the frontmost application.
-///   2. If it's a supported terminal, AppleScript → the tty of its frontmost tab.
-///   3. Find the `claude`/`codex` process attached to that tty.
-///   4. Read `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from that process's environment.
-///   5. Map that config dir to one of the known accounts.
+/// Two detection paths, both local and read-only:
 ///
-/// Returns `nil` whenever any link can't be resolved (non-terminal app, unscriptable
-/// terminal, tab not running Claude/Codex) — the caller falls back to the global peak.
+///   Terminal sessions (`claude`/`codex` run in a shell):
+///     1. `NSWorkspace` → the frontmost application.
+///     2. If it's a supported terminal, AppleScript → the tty of its frontmost tab.
+///     3. Find the `claude`/`codex` process attached to that tty.
+///     4. Read `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from that process's environment.
+///     5. Map that config dir to one of the known accounts.
+///
+///   Desktop apps (Codex.app / Claude.app — no tty to inspect):
+///     1. Recognise the app by bundle id.
+///     2. Read the app's *active* account identity from its on-disk state
+///        (Codex: `~/.codex/auth.json` account_id; Claude: the app's
+///        `config.json` lastKnownAccountUuid).
+///     3. Match that identity to a loaded account via `accountsByUUID`.
+///
+/// Returns `nil` whenever any link can't be resolved — the caller falls back to the
+/// global peak.
 struct FrontmostDetector: Sendable {
 
     /// Resolve the frontmost account id (matching `AccountRef.id`), or nil.
-    /// `known` lets us map a discovered config dir back to the exact account handle.
-    func detect(known: [AccountRef]) -> String? {
+    /// - `known`: maps a discovered config dir back to the exact account handle (terminals).
+    /// - `accountsByUUID`: maps a loaded account's stable identity (Claude profile uuid /
+    ///   Codex account_id) to its `AccountRef.id`, for the desktop-app path.
+    func detect(known: [AccountRef], accountsByUUID: [String: String] = [:]) -> String? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               let bundleID = app.bundleIdentifier else { return nil }
+
+        // Desktop-app path first: these apps aren't terminals but do host a session.
+        if let desktop = DesktopApp(bundleID: bundleID) {
+            guard let uuid = desktop.activeAccountIdentity() else { return nil }
+            return accountsByUUID[uuid]
+        }
 
         guard let terminal = SupportedTerminal(bundleID: bundleID) else { return nil }
         guard let tty = terminal.frontmostTTY() else { return nil }
@@ -87,6 +104,54 @@ enum SupportedTerminal: Sendable {
         }
         return AppleScriptRunner.runString(script)
     }
+}
+
+// MARK: - Desktop apps
+
+/// Native desktop apps that host a Claude/Codex session but expose no tty. Each pins
+/// itself to one login on disk, so we read that login's identity directly instead of
+/// inspecting a process.
+enum DesktopApp: Sendable {
+    case codex
+    case claude
+
+    init?(bundleID: String) {
+        switch bundleID {
+        case "com.openai.codex": self = .codex
+        case "com.anthropic.claudefordesktop": self = .claude
+        default: return nil
+        }
+    }
+
+    /// The stable identity of the account the app is currently signed into — matched
+    /// against a loaded account's `accountUUID`. Nil if the file is absent/unreadable.
+    func activeAccountIdentity() -> String? {
+        switch self {
+        case .codex:
+            // The Codex app always uses ~/.codex; auth.json holds the active account_id,
+            // the same value the usage layer reports for a Codex account.
+            let url = FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: ".codex/auth.json")
+            guard let data = try? Data(contentsOf: url),
+                  let cred = try? JSONDecoder().decode(CodexCredential.self, from: data)
+            else { return nil }
+            return cred.tokens?.accountId
+        case .claude:
+            // The Claude desktop app records the signed-in account UUID in its Electron
+            // config; it equals the profile `account.uuid` the usage layer stores.
+            let url = FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: "Library/Application Support/Claude/config.json")
+            guard let data = try? Data(contentsOf: url),
+                  let cfg = try? JSONDecoder().decode(ClaudeAppConfig.self, from: data)
+            else { return nil }
+            return cfg.lastKnownAccountUuid
+        }
+    }
+}
+
+/// The slice of the Claude desktop app's `config.json` we read: the active login's UUID.
+private struct ClaudeAppConfig: Decodable {
+    let lastKnownAccountUuid: String?
 }
 
 // MARK: - AppleScript runner

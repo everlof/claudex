@@ -17,8 +17,35 @@ final class UsageStore {
     /// detected (menu bar then shows the global peak). Matches an `AccountRef.id`.
     private(set) var frontmostAccountID: String?
 
+    /// Menu-bar presentation settings, persisted across launches. The status button
+    /// re-renders via observation whenever either changes.
+    var menuBarStyle: MenuBarStyle = .dual {
+        didSet { UserDefaults.standard.set(menuBarStyle.rawValue, forKey: Self.styleKey) }
+    }
+    var menuBarSubject: MenuBarSubject = .frontmost {
+        didSet { UserDefaults.standard.set(menuBarSubject.rawValue, forKey: Self.subjectKey) }
+    }
+    private static let styleKey = "menuBarStyle"
+    private static let subjectKey = "menuBarSubject"
+
+    /// Reset-notification settings, persisted. Default: ping when a 5-hour or weekly
+    /// window that sat at ≥85% rolls over — that's when fresh budget actually matters.
+    var notifyOnReset: Bool = true {
+        didSet { UserDefaults.standard.set(notifyOnReset, forKey: "notifyOnReset"); resyncNotifications() }
+    }
+    var notifyThreshold: Double = 0.85 {
+        didSet { UserDefaults.standard.set(notifyThreshold, forKey: "notifyThreshold"); resyncNotifications() }
+    }
+    var notifyShortWindow: Bool = true {
+        didSet { UserDefaults.standard.set(notifyShortWindow, forKey: "notifyShortWindow"); resyncNotifications() }
+    }
+    var notifyLongWindow: Bool = true {
+        didSet { UserDefaults.standard.set(notifyLongWindow, forKey: "notifyLongWindow"); resyncNotifications() }
+    }
+
     private let service = UsageService()
     private let detector = FrontmostDetector()
+    private let notifier = ResetNotifier()
     private var timerTask: Task<Void, Never>?
     private var frontmostTask: Task<Void, Never>?
     private var inFlight: Task<Void, Never>?
@@ -31,6 +58,25 @@ final class UsageStore {
     private let minRefreshSpacing: TimeInterval = 60
 
     init() {
+        let defaults = UserDefaults.standard
+        if let raw = defaults.string(forKey: Self.styleKey), let style = MenuBarStyle(rawValue: raw) {
+            menuBarStyle = style
+        }
+        if let raw = defaults.string(forKey: Self.subjectKey), let subject = MenuBarSubject(rawValue: raw) {
+            menuBarSubject = subject
+        }
+        if defaults.object(forKey: "notifyOnReset") != nil {
+            notifyOnReset = defaults.bool(forKey: "notifyOnReset")
+        }
+        if defaults.object(forKey: "notifyThreshold") != nil {
+            notifyThreshold = defaults.double(forKey: "notifyThreshold")
+        }
+        if defaults.object(forKey: "notifyShortWindow") != nil {
+            notifyShortWindow = defaults.bool(forKey: "notifyShortWindow")
+        }
+        if defaults.object(forKey: "notifyLongWindow") != nil {
+            notifyLongWindow = defaults.bool(forKey: "notifyLongWindow")
+        }
         rediscover()
     }
 
@@ -47,6 +93,7 @@ final class UsageStore {
     /// Start the background refresh loop. Fires immediately, then every 5 minutes.
     func start() {
         guard timerTask == nil else { return }
+        notifier.activate()
         timerTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -71,13 +118,24 @@ final class UsageStore {
             guard let self else { return }
             while !Task.isCancelled {
                 let refs = self.entries.map(\.ref)
+                // Map each loaded account's stable identity to its ref id, so a frontmost
+                // desktop app (Codex.app / Claude.app) can be resolved to an account.
+                let accountsByUUID = self.entries.reduce(into: [String: String]()) { map, entry in
+                    if let uuid = entry.state.value?.accountUUID { map[uuid] = entry.ref.id }
+                }
                 let detector = self.detector
                 // Run the (blocking) detection off the main actor.
                 let id = await Task.detached(priority: .utility) {
-                    detector.detect(known: refs)
+                    detector.detect(known: refs, accountsByUUID: accountsByUUID)
                 }.value
                 if self.frontmostAccountID != id {
                     self.frontmostAccountID = id
+                    // CLAUDEX_DEBUG_FRONTMOST=1 logs each change to Console/`log stream`,
+                    // for diagnosing which account a frontmost window resolves to.
+                    if ProcessInfo.processInfo.environment["CLAUDEX_DEBUG_FRONTMOST"] == "1" {
+                        let handle = self.entries.first { $0.ref.id == id }?.ref.handle ?? "—"
+                        NSLog("[claudex] frontmost account = %@ (%@)", id ?? "nil", handle)
+                    }
                 }
                 try? await Task.sleep(for: self.frontmostInterval)
             }
@@ -86,8 +144,10 @@ final class UsageStore {
 
     /// Refresh every account concurrently. `force` bypasses the throttle (used by the
     /// timer and the explicit refresh button); non-forced calls are skipped if the last
-    /// refresh was very recent.
-    func refreshAll(force: Bool) async {
+    /// refresh was very recent. `userInitiated` marks refreshes the user explicitly
+    /// asked for — only those retry accounts whose keychain read was denied, so the
+    /// macOS consent prompt never reappears on the app's own schedule.
+    func refreshAll(force: Bool, userInitiated: Bool = false) async {
         rediscover()
         guard !entries.isEmpty else {
             isRefreshing = false
@@ -111,7 +171,12 @@ final class UsageStore {
             }
         }
 
-        let refs = entries.map(\.ref)
+        // Never auto-retry a denied keychain read — every attempt re-triggers the macOS
+        // prompt, which would otherwise pop up again on each cycle until "Always Allow".
+        let refs = entries.filter { entry in
+            if case .failed(.keychainDenied, _) = entry.state { return userInitiated }
+            return true
+        }.map(\.ref)
         // Stagger requests to the same host so three Claude accounts don't burst the
         // usage endpoint simultaneously.
         let staggered = refs.enumerated().map { (index, ref) in (ref, Double(index) * 0.25) }
@@ -164,6 +229,20 @@ final class UsageStore {
         }
 
         lastRefresh = Date()
+        resyncNotifications()
+    }
+
+    /// Keep pending reset notifications in step with the latest data and settings.
+    private func resyncNotifications() {
+        notifier.sync(
+            entries: entries,
+            settings: ResetNotificationSettings(
+                enabled: notifyOnReset,
+                threshold: notifyThreshold,
+                shortWindow: notifyShortWindow,
+                longWindow: notifyLongWindow
+            )
+        )
     }
 
     /// Backoff before a retry, or `nil` to give up (let the next 5-min tick heal it).
@@ -177,10 +256,11 @@ final class UsageStore {
         return min(cap, pow(2, Double(attempt))) // 1s, 2s, 4s…
     }
 
-    /// User-triggered refresh (menu button) — always forces.
+    /// User-triggered refresh (menu button) — always forces, and retries accounts whose
+    /// keychain read was denied (re-triggering the consent prompt).
     func refreshNow() {
         inFlight?.cancel()
-        inFlight = Task { await refreshAll(force: true) }
+        inFlight = Task { await refreshAll(force: true, userInitiated: true) }
     }
 
     /// Called when the popover opens. Refreshes only if data is stale, so rapidly
@@ -216,42 +296,96 @@ final class UsageStore {
         return entries.first { $0.ref.id == id && $0.state.value != nil }
     }
 
-    /// What the menu bar should display: either the frontmost account's two windows, or
-    /// the global-peak fallback.
+    /// The loaded account with the highest headline usage.
+    var peakEntry: AccountEntry? {
+        entries
+            .filter { $0.state.value != nil }
+            .max { ($0.state.value?.headlineFraction ?? 0) < ($1.state.value?.headlineFraction ?? 0) }
+    }
+
+    /// The account the menu bar features, per the subject setting. Nil falls back to the
+    /// untinted global peak.
+    var featuredEntry: AccountEntry? {
+        switch menuBarSubject {
+        case .frontmost: return frontmostEntry
+        case .peak: return peakEntry
+        }
+    }
+
+    /// What the menu bar should display: either the featured account's windows, or the
+    /// global-peak fallback.
     var menuBar: MenuBarSummary {
-        if let entry = frontmostEntry, let usage = entry.state.value {
-            let short = usage.windows.first(where: { $0.id == "5h" }) ?? usage.windows.first
-            let long = usage.windows.first(where: { $0.id == "7d" || $0.id == "week" })
-                ?? usage.windows.dropFirst().first
+        // Per-account compact state (panel order) for the all-accounts style.
+        let badges = entries.compactMap { entry in
+            entry.state.value.map {
+                MenuBarSummary.Badge(
+                    provider: entry.ref.provider,
+                    fraction: $0.headlineFraction,
+                    severity: $0.severity
+                )
+            }
+        }
+
+        if let entry = featuredEntry, let usage = entry.state.value {
+            let (short, long) = (usage.shortWindow, usage.longWindow)
             return MenuBarSummary(
                 provider: entry.ref.provider,
+                handle: DemoMode.handle(entry.ref.handle, id: entry.ref.id),
                 primaryPercent: short?.percent,
                 secondaryPercent: long?.percent,
+                primaryFraction: short?.fraction,
+                secondaryFraction: long?.fraction,
                 severity: usage.severity,
-                isFrontmost: true
+                isFeatured: true,
+                badges: badges
             )
         }
         // Fallback: global peak across all accounts, no per-account tint.
         guard loadedCount > 0 else {
-            return MenuBarSummary(provider: nil, primaryPercent: nil, secondaryPercent: nil,
-                                  severity: .normal, isFrontmost: false)
+            return MenuBarSummary(provider: nil, handle: nil,
+                                  primaryPercent: nil, secondaryPercent: nil,
+                                  primaryFraction: nil, secondaryFraction: nil,
+                                  severity: .normal, isFeatured: false, badges: badges)
         }
+        // The drawn styles keep their two-row shape in fallback by showing the worst
+        // 5h and worst weekly window across all accounts (a single peak number would
+        // render as one nearly-full bar — a floating red pill).
+        let usages = entries.compactMap { $0.state.value }
+        let worstShort = usages.compactMap { $0.shortWindow?.fraction }.max()
+        let worstLong = usages.compactMap { $0.longWindow?.fraction }.max()
         return MenuBarSummary(
             provider: nil,
+            handle: nil,
             primaryPercent: Int((peakFraction * 100).rounded()),
             secondaryPercent: nil,
+            primaryFraction: worstShort ?? peakFraction,
+            secondaryFraction: worstLong,
             severity: overallSeverity,
-            isFrontmost: false
+            isFeatured: false,
+            badges: badges
         )
     }
+
 }
 
 /// A value type describing exactly what the menu-bar button should render, so the
-/// AppKit status item stays a thin projection of typed store state.
+/// AppKit status item stays a thin projection of typed store state. Carries enough for
+/// every `MenuBarStyle`; each style picks what it needs.
 struct MenuBarSummary: Equatable, Sendable {
-    let provider: Provider?      // tints the glyph when a frontmost account is known
-    let primaryPercent: Int?     // 5-hour % (frontmost) or global peak % (fallback)
-    let secondaryPercent: Int?   // weekly % — only shown for a frontmost account
+    /// Compact per-account state for the all-accounts style, in panel order.
+    struct Badge: Equatable, Sendable {
+        let provider: Provider
+        let fraction: Double
+        let severity: Severity
+    }
+
+    let provider: Provider?        // tints glyph/ring when an account is featured
+    let handle: String?            // featured account's handle (demo-mode aware)
+    let primaryPercent: Int?       // 5-hour % (featured) or global peak % (fallback)
+    let secondaryPercent: Int?     // weekly % — only for a featured account
+    let primaryFraction: Double?   // raw fractions for the drawn styles (ring / bars)
+    let secondaryFraction: Double?
     let severity: Severity
-    let isFrontmost: Bool
+    let isFeatured: Bool
+    let badges: [Badge]
 }

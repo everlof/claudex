@@ -79,6 +79,7 @@ struct UsageService: Sendable {
         return AccountUsage(
             planLabel: plan,
             displayName: name,
+            accountUUID: profile?.account?.uuid,
             windows: windows,
             extraWindows: extras,
             resetCredits: [],
@@ -150,6 +151,7 @@ struct UsageService: Sendable {
         return AccountUsage(
             planLabel: usage.planType.map { $0.capitalized },
             displayName: displayName,
+            accountUUID: accountId,
             windows: windows,
             extraWindows: extras,
             resetCredits: credits,

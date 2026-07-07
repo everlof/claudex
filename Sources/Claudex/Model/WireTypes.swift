@@ -56,12 +56,14 @@ enum ClaudeWire {
         let organization: Organization?
 
         struct Account: Decodable {
+            let uuid: String?
             let fullName: String?
             let email: String?
             let hasClaudeMax: Bool?
             let hasClaudePro: Bool?
 
             enum CodingKeys: String, CodingKey {
+                case uuid
                 case fullName = "full_name"
                 case email
                 case hasClaudeMax = "has_claude_max"

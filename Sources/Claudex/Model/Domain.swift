@@ -131,6 +131,10 @@ struct ResetCredit: Sendable, Hashable, Identifiable {
 struct AccountUsage: Sendable, Hashable {
     let planLabel: String?
     let displayName: String?
+    /// Stable account identity used to match a frontmost desktop-app session (Codex.app /
+    /// Claude.app) back to this account. Claude: the profile `account.uuid`; Codex: the
+    /// `account_id`. Nil when the fetch couldn't determine it (e.g. profile call failed).
+    let accountUUID: String?
     /// Primary windows to surface prominently (e.g. Claude 5h + 7d, Codex 5h + weekly).
     let windows: [UsageWindow]
     /// Extra per-model / additional windows shown in a secondary list.
@@ -155,6 +159,15 @@ struct AccountUsage: Sendable, Hashable {
         resetCredits
             .filter { $0.isAvailable && $0.expiresAt != nil }
             .min { ($0.expiresAt ?? .distantFuture) < ($1.expiresAt ?? .distantFuture) }
+    }
+
+    /// The two windows the menu bar and reset notifications surface — 5-hour and
+    /// weekly — with positional fallbacks for accounts that don't report those ids.
+    var shortWindow: UsageWindow? {
+        windows.first(where: { $0.id == "5h" }) ?? windows.first
+    }
+    var longWindow: UsageWindow? {
+        windows.first(where: { $0.id == "7d" || $0.id == "week" }) ?? windows.dropFirst().first
     }
 }
 
@@ -207,6 +220,10 @@ struct AccountEntry: Identifiable, Sendable {
 /// present a precise, human message instead of a raw string.
 enum UsageError: Error, Sendable, Hashable {
     case noCredential
+    /// The keychain item exists but macOS refused the read (the user clicked "Deny" on
+    /// the consent prompt). Automatic refreshes skip accounts in this state so the
+    /// prompt only reappears when the user explicitly retries.
+    case keychainDenied
     case credentialUnreadable(String)
     case tokenExpired
     case rateLimited(retryAfter: TimeInterval?)
@@ -217,6 +234,7 @@ enum UsageError: Error, Sendable, Hashable {
     var headline: String {
         switch self {
         case .noCredential: return "Not signed in"
+        case .keychainDenied: return "Keychain access denied"
         case .credentialUnreadable: return "Credential unreadable"
         case .tokenExpired: return "Session expired"
         case .rateLimited: return "Rate limited"
@@ -230,6 +248,8 @@ enum UsageError: Error, Sendable, Hashable {
         switch self {
         case .noCredential:
             return "No stored login was found for this account."
+        case .keychainDenied:
+            return "macOS blocked reading this login. Retry and choose “Always Allow”."
         case let .credentialUnreadable(m):
             return m
         case .tokenExpired:
