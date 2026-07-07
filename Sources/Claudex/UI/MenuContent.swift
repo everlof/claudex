@@ -20,6 +20,14 @@ struct MenuContent: View {
             } else {
                 ScrollView {
                     VStack(spacing: 10) {
+                        UsageChartView(
+                            store: store.history,
+                            mode: .compact,
+                            onBreakout: { UsageHistoryWindow.show(store: store.history) }
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.top, 10)
+                        Divider().opacity(0.4)
                         ForEach(store.entries) { entry in
                             AccountCard(
                                 entry: entry,
@@ -29,7 +37,8 @@ struct MenuContent: View {
                             )
                         }
                     }
-                    .padding(12)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
                 }
                 .frame(maxHeight: maxContentHeight)
             }

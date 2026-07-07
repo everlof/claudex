@@ -43,6 +43,16 @@ final class UsageStore {
         didSet { UserDefaults.standard.set(notifyLongWindow, forKey: "notifyLongWindow"); resyncNotifications() }
     }
 
+    /// Usage-history store for the chart. Reads the same discovered accounts; built lazily on
+    /// first access so its ccusage shell-out only happens once the chart is actually shown.
+    var history: HistoryStore {
+        if let historyStore { return historyStore }
+        let store = HistoryStore(accounts: { [weak self] in self?.entries.map(\.ref) ?? [] })
+        historyStore = store
+        return store
+    }
+    @ObservationIgnored private var historyStore: HistoryStore?
+
     private let service = UsageService()
     private let detector = FrontmostDetector()
     private let notifier = ResetNotifier()
