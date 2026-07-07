@@ -47,6 +47,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.startFrontmostTracking()      // track which account is frontmost
         observeStore()      // keep the status button in sync with store changes
         updateStatusButton() // initial render
+
+        // CLAUDEX_CAPTURE=1 shows the panel in a standalone floating window (instead of
+        // the click-to-open, dismiss-on-outside-click popover) so screenshots can be
+        // captured deterministically. Pair with CLAUDEX_DEMO=1 for anonymised names.
+        if ProcessInfo.processInfo.environment["CLAUDEX_CAPTURE"] == "1" {
+            showCaptureWindow()
+        }
+    }
+
+    /// A borderless window hosting the panel, for reproducible doc/social screenshots.
+    private var captureWindow: NSWindow?
+    private func showCaptureWindow() {
+        // CLAUDEX_CAPTURE_HEIGHT overrides the panel height so every account fits in one
+        // shot (the live popover scrolls). The panel's own maxHeight is lifted to match.
+        let heightOverride = ProcessInfo.processInfo.environment["CLAUDEX_CAPTURE_HEIGHT"]
+            .flatMap { Double($0) }
+        let height: CGFloat = heightOverride.map { CGFloat($0) } ?? 560
+        let host = NSHostingController(
+            rootView: MenuContent(store: store, maxContentHeight: height)
+        )
+        host.view.frame = NSRect(x: 0, y: 0, width: 340, height: height)
+        let window = NSWindow(contentViewController: host)
+        window.styleMask = [.borderless]
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
+        window.level = .floating
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        captureWindow = window
     }
 
     // MARK: Status button rendering

@@ -3,6 +3,9 @@ import SwiftUI
 /// The panel shown when the menubar icon is clicked. Header + account cards + footer.
 struct MenuContent: View {
     @Bindable var store: UsageStore
+    /// Caps the scroll area's height. Defaults to the popover size; capture mode raises it
+    /// so every account fits in one screenshot.
+    var maxContentHeight: CGFloat = 520
     /// Ticks every second so relative countdowns stay live while the panel is open.
     @State private var now = Date()
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -28,7 +31,7 @@ struct MenuContent: View {
                     }
                     .padding(12)
                 }
-                .frame(maxHeight: 520)
+                .frame(maxHeight: maxContentHeight)
             }
 
             Divider().opacity(0.4)

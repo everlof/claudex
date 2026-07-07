@@ -4,6 +4,12 @@ A polished macOS menu-bar app that shows **Claude** and **Codex** usage at a gla
 across **multiple logins**, with rate-limit windows, reset countdowns, and Codex reset
 credits + expirations.
 
+<p align="center">
+  <img src="docs/screenshot.png" alt="Claudex panel showing usage across five Claude and Codex accounts" width="340">
+</p>
+
+> Account names in the screenshot are placeholders.
+
 ## What it shows
 
 - The **peak usage %** across every account, right in the menu bar (colour-coded green →
@@ -112,6 +118,10 @@ easy to tell apart.
 
 Claude logins are stored in the macOS keychain, so the **first time** Claudex reads each
 one, macOS asks for permission. Click **Always Allow** and it won't ask again.
+
+If you click **Deny** (or dismiss the prompt), Claudex stops asking: automatic refreshes
+skip that account, and its card shows **Keychain access denied** with a **Grant access…**
+button. Clicking it — or the ⟳ refresh button — retries and re-shows the macOS prompt.
 
 For "Always Allow" to *stick across rebuilds*, the app must keep a **stable code
 signature**. `build-app.sh` signs with your first available *Apple Development* identity
