@@ -20,9 +20,7 @@ class Claudex < Formula
     # SwiftPM does its own sandboxing, which collides with Homebrew's build sandbox
     # ("sandbox_apply: Operation not permitted"). Disable SwiftPM's sandbox for the build.
     ENV["CLAUDEX_SWIFT_FLAGS"] = "--disable-sandbox"
-    # Homebrew's sandbox blocks the keychain access that Developer-identity signing needs,
-    # so ad-hoc sign. (The app still works; macOS just re-prompts for keychain access if
-    # the app is later rebuilt.)
+    # Homebrew builds use an ad-hoc signature; the app does not read Claude's Keychain.
     ENV["CLAUDEX_ADHOC_SIGN"] = "1"
 
     # Build the release binary and assemble the signed .app bundle.
@@ -44,12 +42,13 @@ class Claudex < Formula
 
         ln -sf "#{opt_prefix}/Claudex.app" /Applications/Claudex.app
 
-      On first run macOS will ask to allow reading the keychain (Claude logins) and,
-      for the "frontmost account" feature, to control Terminal/iTerm. Click Allow.
+      Claude usage uses an explicit local-feed setup and never reads its Keychain token.
+      For the "frontmost account" feature, macOS may ask to control Terminal/iTerm.
     EOS
   end
 
   test do
     assert_path_exists prefix/"Claudex.app/Contents/MacOS/Claudex"
+    assert_path_exists prefix/"Claudex.app/Contents/Helpers/ClaudexStatusBridge"
   end
 end

@@ -1,0 +1,62 @@
+# Changelog
+
+All notable changes to Claudex will be documented in this file.
+
+The format is based on Keep a Changelog, and this project follows semantic
+versioning for public releases.
+
+## [Unreleased]
+
+## [1.1.0] - 2026-07-12
+
+### Added
+- Opt-in Claude Code local usage feed with reversible per-profile setup, existing
+  status-line chaining, stale-data indicators, and safe disconnect behavior.
+- Preview-before-copy diagnostics with an explicit privacy allowlist.
+- A normalized all-account portfolio and same-provider handoff suggestions when
+  an active account is under rate-limit pressure.
+- Frontmost Claude/Codex session detection for Terminal, iTerm2, and supported
+  desktop-app state, with provider-aware menu-bar fallback behavior.
+- Configurable menu-bar subjects/styles and reset notifications.
+- Usage-history chart backed by `ccusage`, with compact panel summary and a
+  breakout window; the optional tool must already be installed and is never
+  downloaded automatically.
+- Launch-at-login control in the app settings menu.
+- App icon asset and bundle icon packaging.
+- Release, privacy, and website publication documentation.
+- Universal direct-download release packaging and GitHub release asset upload
+  script.
+- Unit and black-box coverage for formatting, aggregation, backoff, handoff,
+  local-cache validation, helper deployment/forwarding, and reversible setup.
+- Developer ID signing, Apple notarization/stapling, and Gatekeeper verification
+  for public direct-download releases.
+
+### Changed
+- Claude usage no longer reads Keychain credentials or polls Anthropic's undocumented
+  OAuth usage/profile endpoints; Codex remains network-backed.
+- Existing Claude accounts must use **Review & Connect…** once after upgrading and send
+  one Claude response so the new local feed can produce its first snapshot.
+- Codex refreshes honor server `Retry-After` backoff while keeping a previous safe
+  snapshot visible.
+- Chart and menu rendering are split to reduce unnecessary per-second menu
+  refreshes.
+
+### Fixed
+- Chart x-axis and tooltip overflow handling.
+
+## [1.0.2] - 2026-07-07
+
+### Fixed
+- Hardened the Homebrew build path by supporting ad-hoc signing in sandboxed
+  builds.
+
+## [1.0.1] - 2026-07-07
+
+### Fixed
+- Disabled SwiftPM sandboxing for Homebrew builds.
+- Corrected stale install documentation.
+
+## [1.0.0] - 2026-07-07
+
+### Added
+- Initial open-source release of the Claudex menu-bar app.

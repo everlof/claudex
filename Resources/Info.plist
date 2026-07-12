@@ -9,12 +9,16 @@
     <key>CFBundleIdentifier</key>
     <string>dev.everlof.claudex</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>1.1.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>1.1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
+    <string>Claudex</string>
+    <key>CFBundleIconFile</key>
+    <string>Claudex</string>
+    <key>CFBundleIconName</key>
     <string>Claudex</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>

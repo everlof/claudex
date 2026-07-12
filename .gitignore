@@ -4,6 +4,7 @@
 
 # Assembled / signed app bundle (produced by build-app.sh)
 Claudex.app/
+dist/
 
 # Claude Code local settings (per-machine permission grants)
 .claude/settings.local.json

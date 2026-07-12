@@ -31,16 +31,25 @@ struct UsageChartView: View {
         ChartPalette.assign(series: series.map { ($0.name, $0.provider) })
     }
 
+    /// Compact chart collapsed to its one-line summary (never collapses the full window).
+    private var isCollapsed: Bool { isCompact && store.chartCollapsed }
+
     var body: some View {
         VStack(alignment: .leading, spacing: isCompact ? 8 : 12) {
-            if isCompact { compactHeader } else { heroAndControls }
-            if store.ccusageMissing {
-                missingHint
-            } else if data.isEmpty {
-                emptyOrLoading
+            if isCollapsed {
+                // Collapsed compact = just the one-line summary, with its own leading chevron.
+                // No title row, metric toggle, or breakout — those return when expanded.
+                collapsedSummary
             } else {
-                chart
-                legend
+                if isCompact { compactHeader } else { heroAndControls }
+                if store.ccusageMissing {
+                    missingHint
+                } else if data.isEmpty {
+                    emptyOrLoading
+                } else {
+                    chart
+                    legend
+                }
             }
         }
         .padding(isCompact ? 0 : 16)
@@ -57,15 +66,32 @@ struct UsageChartView: View {
             return (tooltipDateLabel(d), total)
         }
         return HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(hovered.map { $0.label.uppercased() } ?? "USAGE · LAST 7 DAYS")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text(hovered.map { formatValue($0.total) } ?? heroValue)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.primary)
-                    .contentTransition(.numericText())
+            // Chevron collapses the chart to its summary; the whole title block is tappable
+            // so the target is comfortable. It's shown open (90°) since the header only
+            // appears while expanded.
+            Button {
+                withAnimation(.snappy(duration: 0.22)) { store.chartCollapsed = true }
+            } label: {
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(90))
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(hovered.map { $0.label.uppercased() } ?? "USAGE · LAST 7 DAYS")
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text(hovered.map { formatValue($0.total) } ?? heroValue)
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.primary)
+                            .contentTransition(.numericText())
+                    }
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("Collapse usage chart")
+
             Spacer()
             metricToggle
             Button {
@@ -77,6 +103,87 @@ struct UsageChartView: View {
             }
             .buttonStyle(.plain)
             .help("Open usage history")
+        }
+    }
+
+    // MARK: Collapsed summary — a one-line trend when the chart is folded away
+
+    /// A brief usage summary shown in place of the chart when collapsed: a mini sparkline of
+    /// the last 7 days, today's spend, and how it compares to yesterday.
+    private var collapsedSummary: some View {
+        let daily = store.compactDailyTotals(metric: store.metric)
+        let today = daily.last?.total ?? 0
+        let yesterday = daily.count >= 2 ? daily[daily.count - 2].total : 0
+        let peak = daily.map(\.total).max() ?? 0
+
+        // The entire strip is the expand target — a big, comfortable hit area (matching the
+        // expanded header, whose whole title block is likewise tappable). The leading chevron
+        // just signals the affordance.
+        return Button {
+            withAnimation(.snappy(duration: 0.22)) { store.chartCollapsed = false }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+
+                Sparkline(values: daily.map(\.total), tint: dominantProvider.accentColor)
+                    .frame(width: 76, height: 22)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4) {
+                        Text("Today")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text(formatValue(today))
+                            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(.primary)
+                    }
+                    if let delta = deltaLabel(today: today, yesterday: yesterday) {
+                        Text(delta.text)
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(delta.color)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("PEAK/DAY")
+                        .font(.system(size: 8.5, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Text(formatValue(peak))
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show usage chart")
+        .transition(.opacity)
+        .accessibilityLabel("7-day usage summary. Click to show the chart.")
+    }
+
+    /// The provider with the most usage across the compact window — tints the sparkline so its
+    /// colour matches the bars the chart would show when expanded.
+    private var dominantProvider: Provider {
+        let byProvider = Dictionary(grouping: series, by: { $0.provider })
+            .mapValues { $0.reduce(0.0) { $0 + $1.total } }
+        return byProvider.max(by: { $0.value < $1.value })?.key ?? .claude
+    }
+
+    /// "▲ 34% vs yesterday" / "▼ 12% vs yesterday" — nil when there's no prior day to compare.
+    private func deltaLabel(today: Double, yesterday: Double) -> (text: String, color: Color)? {
+        guard yesterday > 0 else {
+            return today > 0 ? ("vs. no usage yesterday", .secondary) : nil
+        }
+        let change = (today - yesterday) / yesterday
+        guard abs(change) >= 0.01 else { return ("≈ same as yesterday", .secondary) }
+        let pct = Int((abs(change) * 100).rounded())
+        if change > 0 {
+            return ("▲ \(pct)% vs yesterday", Severity.warning.color)
+        } else {
+            return ("▼ \(pct)% vs yesterday", Provider.codex.accentColor)
         }
     }
 
@@ -378,6 +485,66 @@ struct UsageChartView: View {
         case 1_000_000...: return String(format: "%.0fM", v / 1e6)
         case 1_000...: return String(format: "%.0fK", v / 1e3)
         default: return String(format: "%.0f", v)
+        }
+    }
+}
+
+// MARK: - Sparkline
+
+/// A minimal filled trend line for the collapsed summary — an area under a smoothed poly-line,
+/// with a dot on the latest point. Purely decorative context (the numbers carry the meaning),
+/// so it has no axes or labels. A flat baseline is drawn when every value is zero.
+private struct Sparkline: View {
+    let values: [Double]
+    var tint: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let points = normalizedPoints(in: CGSize(width: w, height: h))
+            ZStack {
+                if points.count >= 2 {
+                    // Filled area beneath the line.
+                    Path { p in
+                        p.move(to: CGPoint(x: points[0].x, y: h))
+                        for pt in points { p.addLine(to: pt) }
+                        p.addLine(to: CGPoint(x: points[points.count - 1].x, y: h))
+                        p.closeSubpath()
+                    }
+                    .fill(LinearGradient(colors: [tint.opacity(0.28), tint.opacity(0.02)],
+                                         startPoint: .top, endPoint: .bottom))
+                    // The line itself.
+                    Path { p in
+                        p.move(to: points[0])
+                        for pt in points.dropFirst() { p.addLine(to: pt) }
+                    }
+                    .stroke(tint, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                    // Latest-point marker.
+                    if let end = points.last {
+                        Circle().fill(tint).frame(width: 3.5, height: 3.5).position(end)
+                    }
+                } else {
+                    Capsule().fill(tint.opacity(0.2)).frame(height: 1.5).position(x: w / 2, y: h / 2)
+                }
+            }
+        }
+    }
+
+    /// Map the values into view-space points. When all values are equal (e.g. all zero) the
+    /// line sits on a low baseline rather than collapsing to the top or bottom edge.
+    private func normalizedPoints(in size: CGSize) -> [CGPoint] {
+        guard values.count >= 2 else { return [] }
+        let maxV = values.max() ?? 0
+        let minV = values.min() ?? 0
+        let span = maxV - minV
+        let inset: CGFloat = 2
+        let usableH = size.height - inset * 2
+        return values.enumerated().map { i, v in
+            let x = size.width * CGFloat(i) / CGFloat(values.count - 1)
+            let norm = span > 0 ? CGFloat((v - minV) / span) : 0.15
+            let y = inset + usableH * (1 - norm)
+            return CGPoint(x: x, y: y)
         }
     }
 }

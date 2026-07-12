@@ -40,7 +40,7 @@ final class ResetNotifier: NSObject, UNUserNotificationCenterDelegate {
         if ProcessInfo.processInfo.environment["CLAUDEX_NOTIFY_TEST"] == "1" {
             let test = Planned(
                 id: "\(Self.idPrefix)test",
-                title: "Claude · default — 5h limit reset",
+                title: "Claude · default — Primary limit reset",
                 body: "This window was at 91% — fresh budget available. (test)",
                 fireIn: 5
             )

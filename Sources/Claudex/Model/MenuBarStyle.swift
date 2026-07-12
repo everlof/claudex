@@ -10,11 +10,11 @@ enum MenuBarStyle: String, CaseIterable, Identifiable, Sendable {
     case iconOnly
     /// A drawn ring that fills with the featured account's usage — data-true icon.
     case ring
-    /// Two mini horizontal bars (5h on top, weekly below), no text.
+    /// Two mini horizontal bars (primary on top, secondary below), no text.
     case bars
     /// Gauge glyph plus a single percentage.
     case percent
-    /// Gauge glyph plus "5h / weekly" percentages for the featured account (classic).
+    /// Gauge glyph plus primary / secondary percentages for the featured account.
     case dual
     /// Account handle plus percentage, e.g. "work 35%".
     case named
@@ -30,7 +30,7 @@ enum MenuBarStyle: String, CaseIterable, Identifiable, Sendable {
         case .ring: return "Usage ring"
         case .bars: return "Mini bars"
         case .percent: return "Percent"
-        case .dual: return "5h / weekly"
+        case .dual: return "Two limits"
         case .named: return "Account name"
         case .allAccounts: return "All accounts"
         }
@@ -39,8 +39,8 @@ enum MenuBarStyle: String, CaseIterable, Identifiable, Sendable {
 
 /// Which account the menu bar features when several are signed in.
 enum MenuBarSubject: String, CaseIterable, Identifiable, Sendable {
-    /// The account running in the frontmost terminal window, falling back to the global
-    /// peak when none is detected.
+    /// The account running in the frontmost terminal window, falling back to normalized
+    /// capacity across all accounts when none can be mapped.
     case frontmost
     /// Always the account with the highest usage, regardless of what's frontmost.
     case peak

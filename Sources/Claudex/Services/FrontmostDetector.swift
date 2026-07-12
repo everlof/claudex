@@ -15,34 +15,84 @@ import AppKit
 ///
 ///   Desktop apps (Codex.app / Claude.app — no tty to inspect):
 ///     1. Recognise the app by bundle id.
-///     2. Read the app's *active* account identity from its on-disk state
-///        (Codex: `~/.codex/auth.json` account_id; Claude: the app's
-///        `config.json` lastKnownAccountUuid).
+///     2. For Codex, read the app's *active* account identity from
+///        `~/.codex/auth.json`. Claude is recognized only as a provider because the
+///        passive feed deliberately has no account identity to match.
 ///     3. Match that identity to a loaded account via `accountsByUUID`.
 ///
 /// Returns `nil` whenever any link can't be resolved — the caller falls back to the
-/// global peak.
+/// normalized portfolio.
 struct FrontmostDetector: Sendable {
+
+    /// Rich detection state retained by the store for aggregate fallback messaging and
+    /// handoff. `accountID` can be nil even when an AI session is recognized: for example,
+    /// a terminal uses a config directory Claudex has not discovered yet.
+    struct Detection: Sendable {
+        let accountID: String?
+        let provider: Provider?
+        let terminal: SupportedTerminal?
+        let workingDirectory: String?
+        /// Opening Claudex's own popover should not erase the session that caused it to open.
+        let preservesPreviousSession: Bool
+
+        var hasAISession: Bool { provider != nil }
+
+        static let none = Detection(
+            accountID: nil,
+            provider: nil,
+            terminal: nil,
+            workingDirectory: nil,
+            preservesPreviousSession: false
+        )
+    }
 
     /// Resolve the frontmost account id (matching `AccountRef.id`), or nil.
     /// - `known`: maps a discovered config dir back to the exact account handle (terminals).
-    /// - `accountsByUUID`: maps a loaded account's stable identity (Claude profile uuid /
-    ///   Codex account_id) to its `AccountRef.id`, for the desktop-app path.
+    /// - `accountsByUUID`: maps a loaded Codex `account_id` to its `AccountRef.id` for
+    ///   the Codex desktop-app path.
     func detect(known: [AccountRef], accountsByUUID: [String: String] = [:]) -> String? {
+        inspect(known: known, accountsByUUID: accountsByUUID).accountID
+    }
+
+    /// Resolve the account and retain enough local context to launch a handoff in the same
+    /// project. This also distinguishes "no AI session" from "AI session, account unknown."
+    func inspect(known: [AccountRef], accountsByUUID: [String: String] = [:]) -> Detection {
         guard let app = NSWorkspace.shared.frontmostApplication,
-              let bundleID = app.bundleIdentifier else { return nil }
+              let bundleID = app.bundleIdentifier else { return .none }
+
+        if bundleID == "dev.everlof.claudex" {
+            return Detection(
+                accountID: nil,
+                provider: nil,
+                terminal: nil,
+                workingDirectory: nil,
+                preservesPreviousSession: true
+            )
+        }
 
         // Desktop-app path first: these apps aren't terminals but do host a session.
         if let desktop = DesktopApp(bundleID: bundleID) {
-            guard let uuid = desktop.activeAccountIdentity() else { return nil }
-            return accountsByUUID[uuid]
+            let accountID = desktop.activeAccountIdentity().flatMap { accountsByUUID[$0] }
+            return Detection(
+                accountID: accountID,
+                provider: desktop.provider,
+                terminal: nil,
+                workingDirectory: nil,
+                preservesPreviousSession: false
+            )
         }
 
-        guard let terminal = SupportedTerminal(bundleID: bundleID) else { return nil }
-        guard let tty = terminal.frontmostTTY() else { return nil }
-        guard let session = ProcessInspector.sessionOnTTY(tty) else { return nil }
+        guard let terminal = SupportedTerminal(bundleID: bundleID) else { return .none }
+        guard let tty = terminal.frontmostTTY() else { return .none }
+        guard let session = ProcessInspector.sessionOnTTY(tty) else { return .none }
 
-        return match(session: session, known: known)
+        return Detection(
+            accountID: match(session: session, known: known),
+            provider: session.provider,
+            terminal: terminal,
+            workingDirectory: session.workingDirectory,
+            preservesPreviousSession: false
+        )
     }
 
     /// Map a detected session (provider + optional config path) to a known account id.
@@ -69,7 +119,7 @@ struct FrontmostDetector: Sendable {
     /// The standardized config directory backing an account ref.
     private func configDir(of ref: AccountRef) -> String {
         switch ref.source {
-        case let .claudeKeychain(_, configDir):
+        case let .claudeConfigDir(configDir):
             return URL(fileURLWithPath: configDir).standardizedFileURL.path
         case let .codexAuthFile(path):
             // auth.json lives inside the codex home; the home is its parent dir.
@@ -108,9 +158,8 @@ enum SupportedTerminal: Sendable {
 
 // MARK: - Desktop apps
 
-/// Native desktop apps that host a Claude/Codex session but expose no tty. Each pins
-/// itself to one login on disk, so we read that login's identity directly instead of
-/// inspecting a process.
+/// Native desktop apps that host a Claude/Codex session but expose no tty. Codex exposes
+/// a useful local account identity; Claude is recognized only at provider level.
 enum DesktopApp: Sendable {
     case codex
     case claude
@@ -123,8 +172,15 @@ enum DesktopApp: Sendable {
         }
     }
 
-    /// The stable identity of the account the app is currently signed into — matched
-    /// against a loaded account's `accountUUID`. Nil if the file is absent/unreadable.
+    var provider: Provider {
+        switch self {
+        case .codex: return .codex
+        case .claude: return .claude
+        }
+    }
+
+    /// The stable Codex identity matched against a loaded account's `accountUUID`.
+    /// Claude deliberately returns nil because its passive feed has no matching identity.
     func activeAccountIdentity() -> String? {
         switch self {
         case .codex:
@@ -137,21 +193,12 @@ enum DesktopApp: Sendable {
             else { return nil }
             return cred.tokens?.accountId
         case .claude:
-            // The Claude desktop app records the signed-in account UUID in its Electron
-            // config; it equals the profile `account.uuid` the usage layer stores.
-            let url = FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Library/Application Support/Claude/config.json")
-            guard let data = try? Data(contentsOf: url),
-                  let cfg = try? JSONDecoder().decode(ClaudeAppConfig.self, from: data)
-            else { return nil }
-            return cfg.lastKnownAccountUuid
+            // The allowlisted passive feed carries no UUID. Reading Claude.app's account
+            // identity cannot produce a safe match, so provider detection intentionally
+            // falls back to the portfolio without inspecting Claude.app's config.
+            return nil
         }
     }
-}
-
-/// The slice of the Claude desktop app's `config.json` we read: the active login's UUID.
-private struct ClaudeAppConfig: Decodable {
-    let lastKnownAccountUuid: String?
 }
 
 // MARK: - AppleScript runner
@@ -178,6 +225,8 @@ enum ProcessInspector {
         let provider: Provider
         /// The value of CLAUDE_CONFIG_DIR / CODEX_HOME, or nil for the default home.
         let configDir: String?
+        /// Project directory inherited by a handoff session, when it can be inspected.
+        let workingDirectory: String?
     }
 
     /// Find the interactive claude/codex process on `ttyPath` and read its account env.
@@ -190,7 +239,11 @@ enum ProcessInspector {
             // but guard anyway.
             if provider == .claude, let cmd = commandLine(pid), cmd.contains("daemon run") { continue }
             let dir = provider == .claude ? env["CLAUDE_CONFIG_DIR"] : env["CODEX_HOME"]
-            return Session(provider: provider, configDir: dir)
+            return Session(
+                provider: provider,
+                configDir: dir,
+                workingDirectory: workingDirectory(pid)
+            )
         }
         return nil
     }
@@ -233,6 +286,17 @@ enum ProcessInspector {
             }
         }
         return env
+    }
+
+    /// `lsof` exposes the cwd symlink without reading session content. Failure simply means a
+    /// handoff starts in the user's home directory instead of the active project.
+    private static func workingDirectory(_ pid: Int32) -> String? {
+        guard let out = shell("/usr/sbin/lsof", ["-a", "-p", "\(pid)", "-d", "cwd", "-Fn"])
+        else { return nil }
+        return out
+            .split(whereSeparator: \.isNewline)
+            .first(where: { $0.first == "n" })
+            .map { String($0.dropFirst()) }
     }
 
     /// Minimal synchronous shell-out used only for local `ps` queries.

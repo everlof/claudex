@@ -52,9 +52,46 @@ enum Fmt {
         return dayFormatter.string(from: date)
     }
 
+    /// Absolute local reset time, shown when the user holds Option instead of the countdown.
+    /// Names the day relatively when it's close ("3:45 PM", "tomorrow 9 AM", "Tue 9 AM") and
+    /// falls back to a dated form for anything further out ("Jul 18, 3 PM").
+    static func absoluteReset(_ date: Date?, now: Date = Date()) -> String? {
+        guard let date else { return nil }
+        let cal = Calendar.current
+        let time = timeFormatter.string(from: date)
+        if cal.isDate(date, inSameDayAs: now) {
+            return time
+        }
+        if let tomorrow = cal.date(byAdding: .day, value: 1, to: now),
+           cal.isDate(date, inSameDayAs: tomorrow) {
+            return "tomorrow \(time)"
+        }
+        // Within the coming week: name the weekday. Beyond that: a dated form.
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: now),
+                                      to: cal.startOfDay(for: date)).day ?? 0
+        if (2...6).contains(days) {
+            return "\(weekdayFormatter.string(from: date)) \(time)"
+        }
+        return "\(dayFormatter.string(from: date)), \(time)"
+    }
+
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMM d"
+        return f
+    }()
+
+    private static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE"
+        return f
+    }()
+
+    /// Short localized time-of-day ("3:45 PM" / "15:45"), respecting the user's locale.
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
         return f
     }()
 }

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Assemble Claudex.app from the SwiftPM release build.
 # Produces a proper .app bundle so MenuBarExtra + LSUIElement work and the app can
-# be code-signed for stable keychain access.
+# be code-signed for stable macOS automation permissions.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -22,23 +22,30 @@ BIN_PATH="$(swift build -c "$CONFIG" $SWIFT_FLAGS --show-bin-path)"
 echo "▸ Assembling $APP_NAME.app…"
 rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS"
+mkdir -p "$BUNDLE/Contents/Helpers"
 mkdir -p "$BUNDLE/Contents/Resources"
 
 cp "$BIN_PATH/$APP_NAME" "$BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$BIN_PATH/ClaudexStatusBridge" "$BUNDLE/Contents/Helpers/ClaudexStatusBridge"
 cp "$ROOT/Resources/Info.plist" "$BUNDLE/Contents/Info.plist"
 
-# Code sign with a STABLE identity so the keychain "Always Allow" grant persists
-# across rebuilds. Ad-hoc signatures change every build, which forces a fresh keychain
-# prompt each time; a consistent Apple Development cert keeps the same code identity, so
-# the user only has to click "Always Allow" once.
+# App icon (CFBundleIconFile points at "Claudex" → Contents/Resources/Claudex.icns).
+if [ -f "$ROOT/Resources/Claudex.icns" ]; then
+    cp "$ROOT/Resources/Claudex.icns" "$BUNDLE/Contents/Resources/$APP_NAME.icns"
+fi
+
+# Code sign with a STABLE identity so Apple Events permissions persist across rebuilds.
+# Ad-hoc signatures change every build; an Apple Development certificate keeps a stable
+# code identity for Terminal/iTerm frontmost-session detection.
 #
 # Override with CLAUDEX_SIGN_ID="Apple Development: Your Name (TEAMID)"; otherwise we pick
 # the first available Apple Development identity, falling back to ad-hoc. Set
-# CLAUDEX_ADHOC_SIGN=1 to force ad-hoc (used by the Homebrew build, whose sandbox blocks
-# keychain access that Developer-identity signing needs).
+# CLAUDEX_ADHOC_SIGN=1 to force ad-hoc (used by sandboxed Homebrew builds), or
+# CLAUDEX_REQUIRE_SIGNING=1 to make an explicit signing failure fatal (public releases).
 SIGN_ID="${CLAUDEX_SIGN_ID:-}"
+REQUIRE_SIGNING="${CLAUDEX_REQUIRE_SIGNING:-0}"
 if [ -z "$SIGN_ID" ] && [ "${CLAUDEX_ADHOC_SIGN:-0}" != "1" ]; then
-    # `|| true` so a sandbox that blocks keychain access can't abort us under `set -e`.
+    # `|| true` so a sandbox that blocks identity lookup can't abort us under `set -e`.
     SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
         | grep -o '"Apple Development: [^"]*"' | head -1 | tr -d '"' || true)"
 fi
@@ -47,19 +54,40 @@ fi
 # Events (we query Terminal/iTerm for the frontmost tab). Without it, AppleScript is
 # blocked with no prompt.
 ENTITLEMENTS="$ROOT/Resources/Claudex.entitlements"
+HELPER="$BUNDLE/Contents/Helpers/ClaudexStatusBridge"
+
+sign_ad_hoc() {
+    codesign --force --options runtime --sign - "$HELPER" >/dev/null 2>&1
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+        --sign - "$BUNDLE" >/dev/null 2>&1
+}
 
 if [ -n "$SIGN_ID" ]; then
     echo "▸ Code signing with: $SIGN_ID"
-    codesign --force --deep --options runtime --entitlements "$ENTITLEMENTS" \
-        --sign "$SIGN_ID" "$BUNDLE" >/dev/null 2>&1 && {
+    TIMESTAMP_ARGS=()
+    if [[ "$SIGN_ID" == "Developer ID Application:"* ]]; then
+        TIMESTAMP_ARGS=(--timestamp)
+    fi
+    # Sign nested code first, then seal it into the app bundle. `--deep` signing can
+    # accidentally apply the app's Apple Events entitlement to the helper.
+    if codesign --force --options runtime "${TIMESTAMP_ARGS[@]}" \
+        --sign "$SIGN_ID" "$HELPER" >/dev/null 2>&1 \
+        && codesign --force --options runtime "${TIMESTAMP_ARGS[@]}" \
+            --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$BUNDLE" >/dev/null 2>&1; then
         echo "  ✓ stable signature + apple-events entitlement"
-    } || {
+    else
+        if [ "$REQUIRE_SIGNING" = "1" ]; then
+            echo "  signing with required identity failed" >&2
+            exit 1
+        fi
         echo "  signing with identity failed; falling back to ad-hoc"
-        codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$BUNDLE" >/dev/null 2>&1 || true
-    }
+        sign_ad_hoc
+    fi
 else
-    echo "▸ Code signing (ad-hoc — keychain will re-prompt after each rebuild)"
-    codesign --force --deep --entitlements "$ENTITLEMENTS" --sign - "$BUNDLE" >/dev/null 2>&1 || true
+    echo "▸ Code signing (ad-hoc)"
+    sign_ad_hoc
 fi
+
+codesign --verify --deep --strict "$BUNDLE"
 
 echo "✓ Built $BUNDLE"

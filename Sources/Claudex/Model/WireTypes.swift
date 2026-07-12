@@ -1,88 +1,5 @@
 import Foundation
 
-// MARK: - Claude wire types
-// GET https://api.anthropic.com/api/oauth/usage
-// GET https://api.anthropic.com/api/oauth/profile
-
-enum ClaudeWire {
-    struct Usage: Decodable {
-        let fiveHour: Window?
-        let sevenDay: Window?
-        let limits: [Limit]?
-
-        enum CodingKeys: String, CodingKey {
-            case fiveHour = "five_hour"
-            case sevenDay = "seven_day"
-            case limits
-        }
-
-        struct Window: Decodable {
-            let utilization: Double?
-            let resetsAt: String?
-
-            enum CodingKeys: String, CodingKey {
-                case utilization
-                case resetsAt = "resets_at"
-            }
-        }
-
-        struct Limit: Decodable {
-            let kind: String?
-            let group: String?
-            let percent: Double?
-            let severity: String?
-            let resetsAt: String?
-            let scope: Scope?
-            let isActive: Bool?
-
-            enum CodingKeys: String, CodingKey {
-                case kind, group, percent, severity, scope
-                case resetsAt = "resets_at"
-                case isActive = "is_active"
-            }
-
-            struct Scope: Decodable {
-                let model: Model?
-                struct Model: Decodable {
-                    let displayName: String?
-                    enum CodingKeys: String, CodingKey { case displayName = "display_name" }
-                }
-            }
-        }
-    }
-
-    struct Profile: Decodable {
-        let account: Account?
-        let organization: Organization?
-
-        struct Account: Decodable {
-            let uuid: String?
-            let fullName: String?
-            let email: String?
-            let hasClaudeMax: Bool?
-            let hasClaudePro: Bool?
-
-            enum CodingKeys: String, CodingKey {
-                case uuid
-                case fullName = "full_name"
-                case email
-                case hasClaudeMax = "has_claude_max"
-                case hasClaudePro = "has_claude_pro"
-            }
-        }
-
-        struct Organization: Decodable {
-            let rateLimitTier: String?
-            let organizationType: String?
-
-            enum CodingKeys: String, CodingKey {
-                case rateLimitTier = "rate_limit_tier"
-                case organizationType = "organization_type"
-            }
-        }
-    }
-}
-
 // MARK: - Codex wire types
 // GET https://chatgpt.com/backend-api/wham/usage
 // GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
@@ -165,21 +82,6 @@ enum CodexWire {
                 case expiresAt = "expires_at"
             }
         }
-    }
-}
-
-// MARK: - Claude credential (keychain JSON payload)
-
-struct ClaudeCredential: Decodable {
-    let claudeAiOauth: OAuth?
-
-    enum CodingKeys: String, CodingKey { case claudeAiOauth }
-
-    struct OAuth: Decodable {
-        let accessToken: String
-        let expiresAt: Double?          // epoch millis
-        let subscriptionType: String?
-        let rateLimitTier: String?
     }
 }
 

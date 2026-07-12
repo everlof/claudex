@@ -1,11 +1,9 @@
 import Foundation
-import CryptoKit
 
-/// Discovers which accounts exist on this machine and reads their tokens on demand.
+/// Discovers which account slots exist on this machine and reads Codex tokens on demand.
 ///
-/// Discovery (which accounts exist) is deliberately separated from token reading
-/// (the secret material). The UI and store only ever see `AccountRef`s; the raw token
-/// is fetched just-in-time inside `readToken` and never stored.
+/// Claude is deliberately config-only: its usage arrives through Claude Code's local
+/// status-line feed, so Claudex never needs to locate or read Claude's Keychain item.
 enum CredentialStore {
 
     // MARK: Claude
@@ -18,8 +16,13 @@ enum CredentialStore {
         let home = FileManager.default.homeDirectoryForCurrentUser
         var result: [(String, URL)] = []
 
-        // Default account.
-        result.append(("default", home.appending(path: ".claude")))
+        // Default account. Do not invent a card on machines that have never used Claude.
+        let defaultDir = home.appending(path: ".claude")
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: defaultDir.path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            result.append(("default", defaultDir))
+        }
         var seen = Set(result.map { $0.1.standardizedFileURL.path })
 
         // Any additional ~/.claude-* dirs that carry a config file, sorted for a stable
@@ -31,10 +34,12 @@ enum CredentialStore {
             where entry.lastPathComponent.hasPrefix(".claude-") {
                 let path = entry.standardizedFileURL.path
                 guard !seen.contains(path) else { continue }
-                let hasConfig = FileManager.default.fileExists(
+                let hasState = FileManager.default.fileExists(
                     atPath: entry.appending(path: ".claude.json").path
+                ) || FileManager.default.fileExists(
+                    atPath: entry.appending(path: "settings.json").path
                 )
-                guard hasConfig else { continue }
+                guard hasState else { continue }
                 let handle = String(entry.lastPathComponent.dropFirst(1)) // strip leading dot
                 result.append((handle, entry))
                 seen.insert(path)
@@ -43,34 +48,16 @@ enum CredentialStore {
         return result
     }
 
-    /// The keychain service name for a config dir. The default dir uses the bare service
-    /// name; every other dir uses `Claude Code-credentials-<sha256(absPath)[:8]>`.
-    static func claudeKeychainService(for configDir: URL, isDefault: Bool) -> String {
-        let base = "Claude Code-credentials"
-        if isDefault { return base }
-        let path = configDir.standardizedFileURL.path
-        let digest = SHA256.hash(data: Data(path.utf8))
-        let hex = digest.map { String(format: "%02x", $0) }.joined()
-        return "\(base)-\(String(hex.prefix(8)))"
-    }
-
-    /// Build refs for every discovered Claude account that has a keychain entry.
+    /// Build refs from config directories only. No Keychain query is performed, including
+    /// the seemingly-harmless existence query that used to run once per account.
     static func discoverClaude() -> [AccountRef] {
-        let dirs = claudeConfigDirs()
-        var refs: [AccountRef] = []
-        for (index, (handle, dir)) in dirs.enumerated() {
-            let isDefault = index == 0
-            let service = claudeKeychainService(for: dir, isDefault: isDefault)
-            guard Keychain.exists(service: service) else { continue }
-            refs.append(
-                AccountRef(
-                    provider: .claude,
-                    handle: handle,
-                    source: .claudeKeychain(service: service, configDir: dir.path)
-                )
+        claudeConfigDirs().map { handle, dir in
+            AccountRef(
+                provider: .claude,
+                handle: handle,
+                source: .claudeConfigDir(path: dir.standardizedFileURL.path)
             )
         }
-        return refs
     }
 
     // MARK: Codex
@@ -121,32 +108,19 @@ enum CredentialStore {
         discoverClaude() + discoverCodex()
     }
 
-    // MARK: Token reading (secret material — stays local to fetch)
+    // MARK: Codex token reading (secret material — stays local to fetch)
 
     /// A token bundle handed to a fetcher. Held only transiently.
-    enum Token: Sendable {
-        case claude(accessToken: String, planLabel: String?)
-        case codex(accessToken: String, accountId: String, displayName: String?)
+    struct CodexToken: Sendable {
+        let accessToken: String
+        let accountId: String
+        let displayName: String?
     }
 
-    static func readToken(for ref: AccountRef) throws(UsageError) -> Token {
+    static func readCodexToken(for ref: AccountRef) throws(UsageError) -> CodexToken {
         switch ref.source {
-        case let .claudeKeychain(service, _):
-            let raw: String
-            switch Keychain.read(service: service) {
-            case let .found(text): raw = text
-            case .denied: throw .keychainDenied
-            case .missing: throw .noCredential
-            }
-            guard let data = raw.data(using: .utf8),
-                  let cred = try? JSONDecoder().decode(ClaudeCredential.self, from: data),
-                  let oauth = cred.claudeAiOauth
-            else {
-                throw .credentialUnreadable("Keychain entry is not valid Claude credentials.")
-            }
-            // Surface an expiry hint but let the server be the source of truth on 401.
-            let plan = oauth.subscriptionType.map { $0.capitalized }
-            return .claude(accessToken: oauth.accessToken, planLabel: plan)
+        case .claudeConfigDir:
+            throw .noCredential
 
         case let .codexAuthFile(path):
             guard let data = FileManager.default.contents(atPath: path) else {
@@ -161,7 +135,11 @@ enum CredentialStore {
             // can label each Codex login (useful once there are several).
             let claims = tokens.idToken.flatMap(decodeJWTClaims)
             let name = claims?.name ?? claims?.email
-            return .codex(accessToken: tokens.accessToken, accountId: tokens.accountId, displayName: name)
+            return CodexToken(
+                accessToken: tokens.accessToken,
+                accountId: tokens.accountId,
+                displayName: name
+            )
         }
     }
 
@@ -176,55 +154,5 @@ enum CredentialStore {
         while b64.count % 4 != 0 { b64.append("=") }
         guard let data = Data(base64Encoded: b64) else { return nil }
         return try? JSONDecoder().decode(CodexIDClaims.self, from: data)
-    }
-}
-
-// MARK: - Keychain (generic-password, read-only)
-
-/// Minimal read-only wrapper over the macOS keychain for generic passwords.
-enum Keychain {
-    static func exists(service: String) -> Bool {
-        var query = baseQuery(service: service)
-        query[kSecReturnData as String] = false
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        return status == errSecSuccess
-    }
-
-    /// Outcome of a secret read. "Denied" is kept distinct from "missing" so callers can
-    /// stop re-triggering the macOS consent prompt instead of treating a user's "Deny"
-    /// as an absent login.
-    enum ReadResult {
-        case found(String)
-        /// The item exists but macOS refused to hand over the data — the user clicked
-        /// "Deny" / cancelled the ACL prompt, or the dialog couldn't be shown.
-        case denied
-        case missing
-    }
-
-    static func read(service: String) -> ReadResult {
-        var query = baseQuery(service: service)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess:
-            guard let data = item as? Data, let text = String(data: data, encoding: .utf8) else {
-                return .missing
-            }
-            return .found(text)
-        case errSecAuthFailed, errSecUserCanceled, errSecInteractionNotAllowed:
-            return .denied
-        default:
-            return .missing
-        }
-    }
-
-    private static func baseQuery(service: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-        ]
     }
 }

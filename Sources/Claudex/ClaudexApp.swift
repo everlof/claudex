@@ -79,6 +79,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         captureWindow = window
+        writeCaptureIfRequested(view: host.view)
+    }
+
+    /// Persist the app's own rendered view without requiring macOS Screen Recording access.
+    /// `scripts/capture-screenshots.sh` supplies the path and exits after each scenario.
+    private func writeCaptureIfRequested(view: NSView) {
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["CLAUDEX_CAPTURE_PATH"], !path.isEmpty else { return }
+        let delay = env["CLAUDEX_CAPTURE_DELAY_MS"].flatMap(Int.init) ?? 750
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(delay))
+            view.layoutSubtreeIfNeeded()
+            defer {
+                if env["CLAUDEX_CAPTURE_EXIT"] == "1" {
+                    NSApplication.shared.terminate(nil)
+                }
+            }
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+                NSLog("[claudex] screenshot failed: could not create bitmap")
+                return
+            }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let data = rep.representation(using: .png, properties: [:]) else {
+                NSLog("[claudex] screenshot failed: could not encode PNG")
+                return
+            }
+            do {
+                try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                NSLog("[claudex] screenshot written to %@", path)
+            } catch {
+                NSLog("[claudex] screenshot failed: %@", error.localizedDescription)
+            }
+        }
     }
 
     // MARK: Status button rendering
@@ -109,11 +142,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Tooltip explains what the number refers to.
         if summary.isFeatured, let entry = store.featuredEntry {
             let role = store.menuBarSubject == .frontmost ? "frontmost" : "highest usage"
-            button.toolTip = "Claudex — \(entry.ref.provider.displayName) · \(entry.ref.handle) (\(role)) · 5h / weekly"
+            let limits = entry.state.value?.windows.map(\.label).joined(separator: " / ")
+            let limitSuffix = limits.flatMap { $0.isEmpty ? nil : " · \($0)" } ?? ""
+            button.toolTip = "Claudex — \(entry.ref.provider.displayName) · \(entry.ref.handle) (\(role))\(limitSuffix)"
         } else if store.hasAnyError {
             button.toolTip = "Claudex — some accounts need attention"
+        } else if store.menuBarSubject == .frontmost, store.frontmostSessionDetected {
+            button.toolTip = "Claudex — active account unknown · normalized capacity across all accounts"
         } else {
-            button.toolTip = "Claudex — peak usage across all accounts"
+            button.toolTip = "Claudex — normalized capacity across all accounts"
         }
     }
 

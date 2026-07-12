@@ -53,6 +53,9 @@ struct UsageRing: View {
 struct WindowBar: View {
     let window: UsageWindow
     var now: Date
+    /// When true (Option held), the reset shows an absolute local clock time instead of a
+    /// countdown. Driven by the shared `OptionKeyMonitor` so every bar flips together.
+    private var optionDown: Bool { OptionKeyMonitor.shared.isOptionDown }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -61,11 +64,12 @@ struct WindowBar: View {
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.primary.opacity(0.85))
                 Spacer(minLength: 4)
-                if let reset = Fmt.relativeFuture(window.resetsAt, now: now) {
-                    Label(reset, systemImage: "arrow.clockwise")
+                if let reset = resetText {
+                    Label(reset, systemImage: optionDown ? "calendar" : "arrow.clockwise")
                         .font(.system(size: 10, weight: .regular))
                         .labelStyle(.titleAndIcon)
                         .foregroundStyle(.secondary)
+                        .help(optionDown ? "Resets at this local time" : "Time until reset (hold ⌥ for the clock time)")
                 }
                 Text("\(window.percent)%")
                     .font(.system(size: 11.5, weight: .semibold, design: .rounded))
@@ -75,6 +79,13 @@ struct WindowBar: View {
             }
             track
         }
+    }
+
+    /// The reset label: absolute local time while Option is held, otherwise a countdown.
+    private var resetText: String? {
+        optionDown
+            ? Fmt.absoluteReset(window.resetsAt, now: now)
+            : Fmt.relativeFuture(window.resetsAt, now: now)
     }
 
     private var track: some View {

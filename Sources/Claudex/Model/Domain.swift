@@ -35,23 +35,23 @@ enum Provider: String, CaseIterable, Sendable, Identifiable {
 
 // MARK: - Account identity
 
-/// Uniquely identifies a login. For Claude the source is a config directory + keychain
-/// service; for Codex it's a CODEX_HOME. The identity is stable across refreshes so
+/// Uniquely identifies a login. For Claude the source is its config directory; for Codex
+/// it's a CODEX_HOME. The identity is stable across refreshes so
 /// SwiftUI can diff cleanly.
 struct AccountRef: Hashable, Sendable, Identifiable {
     let provider: Provider
     /// Short human handle, e.g. "default", "claudedb", "claudevl".
     let handle: String
-    /// Where the credential physically lives (keychain service or auth.json path).
+    /// The local configuration slot backing this account.
     let source: CredentialSource
 
     var id: String { "\(provider.rawValue):\(handle)" }
 }
 
-/// Where a credential is read from. Kept separate from the token itself so tokens
-/// never travel further than the fetch layer.
+/// The local slot backing an account. Claude usage is received passively from Claude Code,
+/// so its source deliberately contains no Keychain service or credential reference.
 enum CredentialSource: Hashable, Sendable {
-    case claudeKeychain(service: String, configDir: String)
+    case claudeConfigDir(path: String)
     case codexAuthFile(path: String)
 }
 
@@ -161,8 +161,8 @@ struct AccountUsage: Sendable, Hashable {
             .min { ($0.expiresAt ?? .distantFuture) < ($1.expiresAt ?? .distantFuture) }
     }
 
-    /// The two windows the menu bar and reset notifications surface — 5-hour and
-    /// weekly — with positional fallbacks for accounts that don't report those ids.
+    /// The two window positions the menu bar and reset notifications surface. Claude
+    /// identifies them by timeframe; Codex reports them as primary and secondary.
     var shortWindow: UsageWindow? {
         windows.first(where: { $0.id == "5h" }) ?? windows.first
     }
@@ -220,10 +220,6 @@ struct AccountEntry: Identifiable, Sendable {
 /// present a precise, human message instead of a raw string.
 enum UsageError: Error, Sendable, Hashable {
     case noCredential
-    /// The keychain item exists but macOS refused the read (the user clicked "Deny" on
-    /// the consent prompt). Automatic refreshes skip accounts in this state so the
-    /// prompt only reappears when the user explicitly retries.
-    case keychainDenied
     case credentialUnreadable(String)
     case tokenExpired
     case rateLimited(retryAfter: TimeInterval?)
@@ -234,7 +230,6 @@ enum UsageError: Error, Sendable, Hashable {
     var headline: String {
         switch self {
         case .noCredential: return "Not signed in"
-        case .keychainDenied: return "Keychain access denied"
         case .credentialUnreadable: return "Credential unreadable"
         case .tokenExpired: return "Session expired"
         case .rateLimited: return "Rate limited"
@@ -248,17 +243,12 @@ enum UsageError: Error, Sendable, Hashable {
         switch self {
         case .noCredential:
             return "No stored login was found for this account."
-        case .keychainDenied:
-            return "macOS blocked reading this login. Retry and choose “Always Allow”."
         case let .credentialUnreadable(m):
             return m
         case .tokenExpired:
             return "Re-run the CLI to refresh this login."
-        case let .rateLimited(retryAfter):
-            if let s = retryAfter, s > 0 {
-                return "Too many requests — retrying in \(Int(s.rounded()))s."
-            }
-            return "Too many requests — will retry shortly."
+        case .rateLimited:
+            return "Too many requests — waiting before retry."
         case .http(let status):
             return status == 401 ? "Login rejected — try re-authenticating." : nil
         case let .network(m):

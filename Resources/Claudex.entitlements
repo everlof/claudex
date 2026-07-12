@@ -6,6 +6,7 @@
          Apple Events to ask Terminal/iTerm for the frontmost tab's tty. -->
     <key>com.apple.security.automation.apple-events</key>
     <true/>
-    <!-- Not sandboxed: we read keychain items and inspect our own processes. -->
+    <!-- Not sandboxed: account discovery and frontmost-session detection read local
+         config/process metadata that is outside an app sandbox container. -->
 </dict>
 </plist>

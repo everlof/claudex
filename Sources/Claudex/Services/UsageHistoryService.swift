@@ -55,7 +55,7 @@ struct UsageHistoryService: Sendable {
         let fetchCommand: String
         let rebucketToWeekly: Bool
         switch account.source {
-        case let .claudeKeychain(_, configDir):
+        case let .claudeConfigDir(configDir):
             sub = "claude"
             fetchCommand = command
             rebucketToWeekly = false
@@ -182,10 +182,11 @@ struct UsageHistoryService: Sendable {
 
     // MARK: ccusage discovery
 
-    /// How to invoke ccusage: either a direct binary, or `npx ccusage` when only npx exists.
+    /// How to invoke an already-installed ccusage binary. Claudex deliberately never falls
+    /// back to npx: opening a chart must not download or execute an unreviewed package.
     struct CcusageInvocation: Sendable {
         let executable: String
-        let baseArgs: [String]   // e.g. ["ccusage"] for npx, [] for a direct binary
+        let baseArgs: [String]
     }
 
     private static func locateCcusage() -> CcusageInvocation? {
@@ -200,15 +201,6 @@ struct UsageHistoryService: Sendable {
         ]
         for path in binCandidates where fm.isExecutableFile(atPath: path) {
             return CcusageInvocation(executable: path, baseArgs: [])
-        }
-        // Fall back to `npx ccusage` if npx is present.
-        let npxCandidates = [
-            "\(home)/.bun/bin/npx",
-            "/opt/homebrew/bin/npx",
-            "/usr/local/bin/npx",
-        ]
-        for path in npxCandidates where fm.isExecutableFile(atPath: path) {
-            return CcusageInvocation(executable: path, baseArgs: ["--yes", "ccusage"])
         }
         return nil
     }

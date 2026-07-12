@@ -11,6 +11,21 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
+        ),
+        .executableTarget(
+            name: "ClaudexStatusBridge",
+            path: "Sources/ClaudexStatusBridge",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .testTarget(
+            name: "ClaudexTests",
+            dependencies: ["Claudex"],
+            path: "Tests/ClaudexTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
         )
     ]
 )

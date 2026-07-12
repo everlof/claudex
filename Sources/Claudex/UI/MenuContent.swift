@@ -26,32 +26,48 @@ struct MenuContent: View {
                                 mode: .compact,
                                 onBreakout: { UsageHistoryWindow.show(store: store.history) }
                             )
-                            .padding(.horizontal, 12)
-                            .padding(.top, 10)
+
+                            if showsPortfolio {
+                                Divider().opacity(0.4)
+                                PortfolioCard(
+                                    portfolio: store.portfolio,
+                                    now: now,
+                                    activeAccountID: store.frontmostAccountID,
+                                    activeSessionDetected: store.frontmostSessionDetected,
+                                    activeProvider: store.frontmostProvider,
+                                    onLaunch: { store.launch(account: $0) },
+                                    onSelectAccount: { id in
+                                        withAnimation(.easeInOut(duration: 0.25)) {
+                                            proxy.scrollTo(id, anchor: .center)
+                                        }
+                                    }
+                                )
+                            }
+
                             Divider().opacity(0.4)
                             ForEach(store.entries) { entry in
                                 AccountCard(
                                     entry: entry,
                                     now: now,
                                     isFrontmost: entry.ref.id == store.frontmostAccountID,
-                                    onRetryAccess: { store.refreshNow() }
+                                    onOpenCLI: { store.launch(account: $0) },
+                                    handoff: store.handoffRecommendation(for: entry.ref.id),
+                                    onHandoff: { store.launch(account: $0) },
+                                    claudeIntegration: store.claudeIntegration(for: entry.ref.id),
+                                    claudeSettingsPath: store.claudeSettingsPath(for: entry.ref.id),
+                                    onConnectClaude: { store.connectClaude(accountID: entry.ref.id) },
+                                    onDisconnectClaude: { store.disconnectClaude(accountID: entry.ref.id) },
+                                    onForgetClaudeMetadata: {
+                                        store.forgetClaudeMetadata(accountID: entry.ref.id)
+                                    }
                                 )
                                 .id(entry.ref.id)
                             }
                         }
                         .padding(.horizontal, 12)
-                        .padding(.bottom, 12)
+                        .padding(.vertical, 10)
                     }
                     .frame(maxHeight: maxContentHeight)
-                    // Bring the detected frontmost account into view — on open, and whenever
-                    // the frontmost account changes while the panel is showing. Keyed on the
-                    // id (and the loaded-entry count) so it re-runs once the list has laid
-                    // out, which the raw `.onAppear` misses if content isn't sized yet.
-                    .task(id: scrollTrigger) {
-                        // Let the list finish laying out before scrolling.
-                        try? await Task.sleep(for: .milliseconds(120))
-                        scrollToFrontmost(proxy, animated: true)
-                    }
                 }
             }
 
@@ -61,26 +77,11 @@ struct MenuContent: View {
         .frame(width: 340)
         .background(panelBackground)
         .onReceive(tick) { now = $0 }
+        // Hold ⌥ to flip reset countdowns to absolute local times, everywhere at once.
+        .tracksOptionKey()
     }
 
-    /// Re-runs the scroll when either the frontmost account or the set of loaded accounts
-    /// changes (the latter covers first data load, when card heights become real).
-    private var scrollTrigger: String {
-        "\(store.frontmostAccountID ?? "none")-\(store.entries.count)"
-    }
-
-    /// Scroll the detected frontmost account's card into view, if one is known and loaded.
-    /// No-op when nothing is frontmost, so the list stays at the top (chart first). On open
-    /// the jump is unanimated (it should just already be there); a live change animates.
-    private func scrollToFrontmost(_ proxy: ScrollViewProxy, animated: Bool) {
-        guard let id = store.frontmostAccountID,
-              store.entries.contains(where: { $0.ref.id == id }) else { return }
-        if animated {
-            withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
-        } else {
-            proxy.scrollTo(id, anchor: .center)
-        }
-    }
+    private var showsPortfolio: Bool { store.entries.count > 1 }
 
     // MARK: Header
 
@@ -111,44 +112,11 @@ struct MenuContent: View {
 
             Spacer()
 
-            Menu {
-                Picker("Menu bar shows", selection: $store.menuBarSubject) {
-                    ForEach(MenuBarSubject.allCases) { subject in
-                        Text(subject.displayName).tag(subject)
-                    }
-                }
-                .pickerStyle(.inline)
-                Picker("Style", selection: $store.menuBarStyle) {
-                    ForEach(MenuBarStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
-                    }
-                }
-                .pickerStyle(.inline)
-                Divider()
-                Menu("Notifications") {
-                    Toggle("Notify when a window resets", isOn: $store.notifyOnReset)
-                    Picker("For usage above", selection: $store.notifyThreshold) {
-                        Text("Any usage").tag(0.0)
-                        Text("50%").tag(0.5)
-                        Text("75%").tag(0.75)
-                        Text("85%").tag(0.85)
-                        Text("95%").tag(0.95)
-                    }
-                    .disabled(!store.notifyOnReset)
-                    Toggle("5-hour window", isOn: $store.notifyShortWindow)
-                        .disabled(!store.notifyOnReset)
-                    Toggle("Weekly window", isOn: $store.notifyLongWindow)
-                        .disabled(!store.notifyOnReset)
-                }
-            } label: {
-                Image(systemName: "switch.2")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Menu bar appearance")
+            // Extracted into its own view so the per-second `now` tick (which drives the
+            // countdown labels) doesn't re-evaluate the open menu's contents and make it
+            // flicker. This view reads only `store`, so it re-renders on setting changes, not
+            // on every clock tick.
+            SettingsMenu(store: store)
 
             Button {
                 store.refreshNow()
@@ -165,7 +133,7 @@ struct MenuContent: View {
                     )
             }
             .buttonStyle(.plain)
-            .help("Refresh now")
+            .help("Reload local Claude data and refresh Codex")
             .disabled(store.isRefreshing)
         }
         .padding(.horizontal, 14)
@@ -185,7 +153,7 @@ struct MenuContent: View {
             Circle()
                 .fill(store.overallSeverity.color)
                 .frame(width: 7, height: 7)
-            Text(store.hasAnyError ? "Some accounts need attention" : "Updated \(Fmt.relativePast(store.lastRefresh, now: now))")
+            Text(footerStatus)
                 .font(.system(size: 10.5))
                 .foregroundStyle(.secondary)
 
@@ -200,6 +168,14 @@ struct MenuContent: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    private var footerStatus: String {
+        if store.hasAnyError { return "Some accounts need attention" }
+        if let updated = store.latestDataUpdate {
+            return "Updated \(Fmt.relativePast(updated, now: now))"
+        }
+        return "Waiting for usage data"
     }
 
     // MARK: Empty
@@ -234,5 +210,75 @@ struct MenuContent: View {
             )
         }
         .ignoresSafeArea()
+    }
+}
+
+// MARK: - Settings menu
+
+/// The header's appearance/notifications menu, split out from `MenuContent` so it isn't
+/// re-evaluated by the panel's per-second countdown tick. It depends only on `store`, so its
+/// items rebuild on real setting changes — not on the clock — which is what stops the open
+/// menu (especially the Notifications submenu) from flickering.
+private struct SettingsMenu: View {
+    @Bindable var store: UsageStore
+
+    var body: some View {
+        Menu {
+            Picker("Menu bar shows", selection: $store.menuBarSubject) {
+                ForEach(MenuBarSubject.allCases) { subject in
+                    Text(subject.displayName).tag(subject)
+                }
+            }
+            .pickerStyle(.inline)
+            Picker("Style", selection: $store.menuBarStyle) {
+                ForEach(MenuBarStyle.allCases) { style in
+                    Text(style.displayName).tag(style)
+                }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            if store.launchAtLoginBlocked {
+                // The user disabled the item in System Settings; we can't flip it back, so
+                // send them there. A plain button (not a toggle) makes that clear.
+                Button("Enable “Launch at login” in Settings…") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            } else {
+                Toggle("Launch at login", isOn: Binding(
+                    get: { store.launchAtLogin },
+                    set: { store.setLaunchAtLogin($0) }
+                ))
+            }
+            Divider()
+            Menu("Notifications") {
+                Toggle("Notify when a window resets", isOn: $store.notifyOnReset)
+                Picker("For usage above", selection: $store.notifyThreshold) {
+                    Text("Any usage").tag(0.0)
+                    Text("50%").tag(0.5)
+                    Text("75%").tag(0.75)
+                    Text("85%").tag(0.85)
+                    Text("95%").tag(0.95)
+                }
+                .disabled(!store.notifyOnReset)
+                Toggle("Primary limit", isOn: $store.notifyShortWindow)
+                    .disabled(!store.notifyOnReset)
+                Toggle("Secondary limit", isOn: $store.notifyLongWindow)
+                    .disabled(!store.notifyOnReset)
+            }
+            Divider()
+            Button("Preview diagnostics…") {
+                DiagnosticsWindow.show(report: store.safeDiagnosticsReport())
+            }
+        } label: {
+            Image(systemName: "switch.2")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Menu bar appearance")
     }
 }

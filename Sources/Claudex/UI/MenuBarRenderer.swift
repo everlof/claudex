@@ -49,7 +49,7 @@ enum MenuBarRenderer {
 
     private static func dualPercent(_ summary: MenuBarSummary) -> String {
         guard let p = summary.primaryPercent else { return "" }
-        if summary.isFeatured, let s = summary.secondaryPercent {
+        if let s = summary.secondaryPercent {
             return " \(p) / \(s)%"
         }
         return " \(p)%"
@@ -69,7 +69,7 @@ enum MenuBarRenderer {
         return title
     }
 
-    /// One severity-coloured dot per account plus the peak percent: "··· 62%".
+    /// One severity-coloured dot per account plus normalized portfolio pressure.
     private static func allAccountsTitle(_ summary: MenuBarSummary) -> NSAttributedString {
         guard !summary.badges.isEmpty else { return text("–") }
         let title = NSMutableAttributedString()
@@ -81,8 +81,9 @@ enum MenuBarRenderer {
                 .baselineOffset: 1,
             ]))
         }
-        if let peak = summary.badges.map(\.fraction).max() {
-            title.append(NSAttributedString(string: " \(Int((peak * 100).rounded()))%",
+        if !summary.badges.isEmpty {
+            let pressure = summary.badges.map(\.fraction).reduce(0, +) / Double(summary.badges.count)
+            title.append(NSAttributedString(string: " \(Int((pressure * 100).rounded()))%",
                                             attributes: [.font: percentFont]))
         }
         return title
@@ -136,14 +137,11 @@ enum MenuBarRenderer {
         return image
     }
 
-    /// A ring that fills clockwise with the primary (5h) fraction, severity-coloured,
+    /// A ring that fills clockwise with the primary fraction, severity-coloured,
     /// with a provider dot in the centre when an account is featured.
     private static func ringImage(_ summary: MenuBarSummary) -> NSImage {
-        // Featured account: its live 5h window. Fallback: the overall peak, matching
-        // what the percent styles display.
-        let fraction = summary.isFeatured
-            ? (summary.primaryFraction ?? 0)
-            : (summary.badges.map(\.fraction).max() ?? 0)
+        // Featured account: its live primary window. Fallback: portfolio pressure.
+        let fraction = summary.primaryFraction ?? 0
         let color = summary.badges.isEmpty
             ? NSColor.tertiaryLabelColor
             : NSColor(summary.severity.color)
@@ -185,7 +183,7 @@ enum MenuBarRenderer {
         return image
     }
 
-    /// Two stacked mini bars — 5h on top, weekly below — each coloured by its own
+    /// Two stacked mini bars — primary on top, secondary below — each coloured by its own
     /// severity. A provider-tinted strip on the left marks a featured account.
     private static func barsImage(_ summary: MenuBarSummary) -> NSImage {
         let fractions = [summary.primaryFraction, summary.secondaryFraction].compactMap { $0 }
@@ -203,7 +201,7 @@ enum MenuBarRenderer {
                 NSBezierPath(roundedRect: strip, xRadius: 1, yRadius: 1).fill()
             }
 
-            // Top row is the primary (5h) window; single-window accounts get one
+            // Top row is the primary window; single-window accounts get one
             // centred bar. No data at all draws hollow tracks.
             let rows: [(y: CGFloat, fraction: Double?)]
             switch fractions.count {
