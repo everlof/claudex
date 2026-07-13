@@ -71,6 +71,29 @@ struct UsageWindow: Sendable, Hashable, Identifiable {
     /// Optional scope, e.g. a specific model ("Fable", "Opus").
     let scope: String?
     let severity: Severity
+    /// True when a passive snapshot's reset time has passed. Its last percentage is
+    /// retained for diagnostics, but must not be presented as current usage.
+    let isExpired: Bool
+
+    init(
+        id: String,
+        label: String,
+        fraction: Double,
+        resetsAt: Date?,
+        windowLength: TimeInterval?,
+        scope: String?,
+        severity: Severity,
+        isExpired: Bool = false
+    ) {
+        self.id = id
+        self.label = label
+        self.fraction = fraction
+        self.resetsAt = resetsAt
+        self.windowLength = windowLength
+        self.scope = scope
+        self.severity = severity
+        self.isExpired = isExpired
+    }
 
     var percent: Int { Int((fraction * 100).rounded()) }
 
@@ -78,7 +101,7 @@ struct UsageWindow: Sendable, Hashable, Identifiable {
     /// This is the pace reference: compare it against `fraction` to see whether usage is
     /// ahead of or behind a steady burn rate. Nil when we can't place it.
     func timeElapsedFraction(now: Date) -> Double? {
-        guard let resetsAt, let windowLength, windowLength > 0 else { return nil }
+        guard !isExpired, let resetsAt, let windowLength, windowLength > 0 else { return nil }
         let start = resetsAt.addingTimeInterval(-windowLength)
         let elapsed = now.timeIntervalSince(start) / windowLength
         return min(1, max(0, elapsed))
@@ -144,14 +167,24 @@ struct AccountUsage: Sendable, Hashable {
     /// Codex reset-credit count reported by the usage endpoint (may exceed detailed list).
     let resetCreditCount: Int?
 
+    /// Windows whose percentages still describe the active rate-limit period.
+    var currentWindows: [UsageWindow] {
+        windows.filter { !$0.isExpired }
+    }
+
     /// The worst severity across the primary windows — drives the account's status dot.
     var severity: Severity {
-        windows.map(\.severity).max() ?? .normal
+        currentWindows.map(\.severity).max() ?? .normal
     }
 
     /// Headline fill fraction (max of primary windows) for compact display.
     var headlineFraction: Double {
-        windows.map(\.fraction).max() ?? 0
+        currentHeadlineFraction ?? 0
+    }
+
+    /// Nil when every passive window has rolled over and no current percentage is known.
+    var currentHeadlineFraction: Double? {
+        currentWindows.map(\.fraction).max()
     }
 
     /// Soonest-expiring available reset credit, for the "expires in" glance.
@@ -164,10 +197,11 @@ struct AccountUsage: Sendable, Hashable {
     /// The two window positions the menu bar and reset notifications surface. Claude
     /// identifies them by timeframe; Codex reports them as primary and secondary.
     var shortWindow: UsageWindow? {
-        windows.first(where: { $0.id == "5h" }) ?? windows.first
+        currentWindows.first(where: { $0.id == "5h" }) ?? currentWindows.first
     }
     var longWindow: UsageWindow? {
-        windows.first(where: { $0.id == "7d" || $0.id == "week" }) ?? windows.dropFirst().first
+        currentWindows.first(where: { $0.id == "7d" || $0.id == "week" })
+            ?? currentWindows.dropFirst().first
     }
 }
 

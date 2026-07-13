@@ -2,10 +2,11 @@ import SwiftUI
 
 // MARK: - Usage ring
 
-/// A circular gauge showing one fraction, with the percent in the middle. The ring
-/// colour tracks severity; at critical it gains a soft glow.
+/// A circular gauge showing one fraction, with the percent in the middle. A nil fraction
+/// renders as unknown. The ring colour tracks severity; at critical it gains a soft glow.
 struct UsageRing: View {
-    let fraction: Double
+    /// Nil means the passive window rolled over before a new value was observed.
+    let fraction: Double?
     let severity: Severity
     var size: CGFloat = 46
     var lineWidth: CGFloat = 5
@@ -16,33 +17,39 @@ struct UsageRing: View {
             Circle()
                 .stroke(Color.primary.opacity(0.08), lineWidth: lineWidth)
 
-            Circle()
-                .trim(from: 0, to: max(0.001, min(1, fraction)))
-                .stroke(
-                    severity.color,
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .shadow(
-                    color: severity == .critical ? severity.color.opacity(0.6) : .clear,
-                    radius: severity == .critical ? 5 : 0
-                )
-                .animation(.smooth(duration: 0.5), value: fraction)
+            if let fraction {
+                Circle()
+                    .trim(from: 0, to: max(0.001, min(1, fraction)))
+                    .stroke(
+                        severity.color,
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                    .shadow(
+                        color: severity == .critical ? severity.color.opacity(0.6) : .clear,
+                        radius: severity == .critical ? 5 : 0
+                    )
+                    .animation(.smooth(duration: 0.5), value: fraction)
 
-            VStack(spacing: 0) {
-                Text("\(Int((fraction * 100).rounded()))")
-                    .font(.system(size: size * 0.30, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-                Text("%")
-                    .font(.system(size: size * 0.16, weight: .medium, design: .rounded))
+                VStack(spacing: 0) {
+                    Text("\(Int((fraction * 100).rounded()))")
+                        .font(.system(size: size * 0.30, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                    Text("%")
+                        .font(.system(size: size * 0.16, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .offset(y: -1)
+                }
+            } else {
+                Text("—")
+                    .font(.system(size: size * 0.34, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
-                    .offset(y: -1)
             }
         }
         .frame(width: size, height: size)
         .accessibilityLabel(label ?? "usage")
-        .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
+        .accessibilityValue(fraction.map { "\(Int(($0 * 100).rounded())) percent" } ?? "unknown after reset")
     }
 }
 
@@ -64,17 +71,27 @@ struct WindowBar: View {
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.primary.opacity(0.85))
                 Spacer(minLength: 4)
-                if let reset = resetText {
+                if window.isExpired {
+                    Label("awaiting update", systemImage: "clock.badge.exclamationmark")
+                        .font(.system(size: 10, weight: .regular))
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(.secondary)
+                        .help("This window reset; Claude Code has not reported its new usage yet")
+                } else if let reset = resetText {
                     Label(reset, systemImage: optionDown ? "calendar" : "arrow.clockwise")
                         .font(.system(size: 10, weight: .regular))
                         .labelStyle(.titleAndIcon)
                         .foregroundStyle(.secondary)
                         .help(optionDown ? "Resets at this local time" : "Time until reset (hold ⌥ for the clock time)")
                 }
-                Text("\(window.percent)%")
+                Text(window.isExpired ? "—" : "\(window.percent)%")
                     .font(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(window.severity == .normal ? .primary : window.severity.color)
+                    .foregroundStyle(
+                        window.isExpired
+                            ? Color.secondary
+                            : (window.severity == .normal ? Color.primary : window.severity.color)
+                    )
                     .frame(minWidth: 30, alignment: .trailing)
             }
             track
@@ -95,20 +112,22 @@ struct WindowBar: View {
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.primary.opacity(0.08))
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [window.severity.color.opacity(0.85), window.severity.color],
-                            startPoint: .leading, endPoint: .trailing
+                if !window.isExpired {
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [window.severity.color.opacity(0.85), window.severity.color],
+                                startPoint: .leading, endPoint: .trailing
+                            )
                         )
-                    )
-                    .frame(width: max(4, w * min(1, window.fraction)))
-                    .animation(.smooth(duration: 0.5), value: window.fraction)
+                        .frame(width: max(4, w * min(1, window.fraction)))
+                        .animation(.smooth(duration: 0.5), value: window.fraction)
+                }
 
                 // "Now" marker: how far through the reset window we are in time. Compare
                 // its position to the fill edge to read your pace at a glance — fill left
                 // of the tick means you're using slower than the clock.
-                if let elapsed {
+                if !window.isExpired, let elapsed {
                     TimeMarker()
                         .position(x: w * elapsed, y: 3)
                 }

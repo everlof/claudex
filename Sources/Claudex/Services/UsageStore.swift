@@ -350,7 +350,7 @@ final class UsageStore {
             return commitClaudeState(
                 at: index,
                 integration: integration,
-                usage: snapshot.accountUsage,
+                usage: snapshot.accountUsage(at: now),
                 fetchedAt: snapshot.observedAt
             )
         } catch let error {

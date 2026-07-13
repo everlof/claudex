@@ -435,7 +435,7 @@ struct AccountCard: View {
     private func loadedContent(_ usage: AccountUsage) -> some View {
         HStack(alignment: .center, spacing: 12) {
             UsageRing(
-                fraction: usage.headlineFraction,
+                fraction: usage.currentHeadlineFraction,
                 severity: usage.severity,
                 size: 50,
                 label: "\(provider.displayName) peak usage"

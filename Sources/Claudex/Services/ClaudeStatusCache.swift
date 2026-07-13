@@ -15,13 +15,21 @@ struct ClaudeStatusSnapshot: Sendable, Equatable {
     let sevenDay: Window?
 
     var accountUsage: AccountUsage {
+        accountUsage(at: Date())
+    }
+
+    /// Reconcile passive values with the clock. Once a reported window has reset, its
+    /// old percentage becomes unknown rather than zero: Claude may have been used from
+    /// another device before the local status line reports again.
+    func accountUsage(at now: Date) -> AccountUsage {
         var windows: [UsageWindow] = []
         if let fiveHour {
             windows.append(Self.usageWindow(
                 id: "5h",
                 label: "5-hour",
                 value: fiveHour,
-                length: 5 * 60 * 60
+                length: 5 * 60 * 60,
+                now: now
             ))
         }
         if let sevenDay {
@@ -29,7 +37,8 @@ struct ClaudeStatusSnapshot: Sendable, Equatable {
                 id: "7d",
                 label: "Weekly",
                 value: sevenDay,
-                length: 7 * 24 * 60 * 60
+                length: 7 * 24 * 60 * 60,
+                now: now
             ))
         }
         return AccountUsage(
@@ -47,7 +56,8 @@ struct ClaudeStatusSnapshot: Sendable, Equatable {
         id: String,
         label: String,
         value: Window,
-        length: TimeInterval
+        length: TimeInterval,
+        now: Date
     ) -> UsageWindow {
         let fraction = min(1, max(0, value.usedPercentage / 100))
         return UsageWindow(
@@ -57,7 +67,8 @@ struct ClaudeStatusSnapshot: Sendable, Equatable {
             resetsAt: value.resetsAt,
             windowLength: length,
             scope: nil,
-            severity: .from(fraction: fraction)
+            severity: .from(fraction: fraction),
+            isExpired: value.resetsAt.map { $0 <= now } ?? false
         )
     }
 }

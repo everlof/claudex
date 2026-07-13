@@ -45,6 +45,40 @@ import Testing
         #expect(snapshot.accountUsage.windows.map(\.id) == ["5h"])
     }
 
+    @Test func resetPassedWindowsRemainVisibleButAreNoLongerPresentedAsCurrent() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = ClaudeStatusSnapshot(
+            observedAt: now.addingTimeInterval(-60),
+            claudeVersion: "2.1.207",
+            fiveHour: .init(usedPercentage: 100, resetsAt: now.addingTimeInterval(-1)),
+            sevenDay: .init(usedPercentage: 52, resetsAt: now.addingTimeInterval(86_400))
+        )
+
+        let usage = snapshot.accountUsage(at: now)
+
+        #expect(usage.windows.map(\.id) == ["5h", "7d"])
+        #expect(usage.windows.first?.isExpired == true)
+        #expect(usage.windows.last?.isExpired == false)
+        #expect(usage.currentHeadlineFraction == 0.52)
+        #expect(usage.shortWindow?.id == "7d")
+    }
+
+    @Test func allResetPassedWindowsProduceAnUnknownHeadline() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = ClaudeStatusSnapshot(
+            observedAt: now.addingTimeInterval(-60),
+            claudeVersion: nil,
+            fiveHour: .init(usedPercentage: 95, resetsAt: now.addingTimeInterval(-1)),
+            sevenDay: nil
+        )
+
+        let usage = snapshot.accountUsage(at: now)
+
+        #expect(usage.currentHeadlineFraction == nil)
+        #expect(usage.shortWindow == nil)
+        #expect(usage.severity == .normal)
+    }
+
     @Test func rejectsCachesWithoutSubscriptionLimits() {
         let data = Data(#"""
         {
