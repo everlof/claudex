@@ -7,6 +7,17 @@ versioning for public releases.
 
 ## [Unreleased]
 
+### Changed
+- Claude's passive feed now tracks last-limits-seen separately from last-value-change
+  time, so unchanged but healthy usage stays fresh.
+- Validated `CLAUDE_CONFIG_DIR` and `CODEX_HOME` paths observed on a frontmost CLI can
+  join the popover even when they do not use Claudex's conventional directory names.
+
+### Fixed
+- A status-line event that temporarily omits Claude rate limits no longer erases the
+  last successful usage snapshot; the card remains visible with a stale indicator.
+- One expired Claude window no longer invalidates another window that is still current.
+
 ## [1.1.0] - 2026-07-12
 
 ### Added

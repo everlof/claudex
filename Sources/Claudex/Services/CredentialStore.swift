@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Discovers which account slots exist on this machine and reads Codex tokens on demand.
@@ -106,6 +107,79 @@ enum CredentialStore {
     /// All accounts across both providers, Claude first.
     static func discoverAll() -> [AccountRef] {
         discoverClaude() + discoverCodex()
+    }
+
+    /// Validate a config directory observed on a live frontmost CLI process and turn it
+    /// into an account ref. This lets non-conventional paths appear without crawling the
+    /// filesystem or persisting the path beyond the current app process.
+    static func discoverObserved(
+        provider: Provider,
+        configDir: String,
+        existing: [AccountRef]
+    ) -> AccountRef? {
+        let expanded = (configDir as NSString).expandingTildeInPath
+        let directory = URL(fileURLWithPath: expanded, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard let values = try? directory.resourceValues(forKeys: [.isDirectoryKey]),
+              values.isDirectory == true
+        else { return nil }
+
+        let source: CredentialSource
+        switch provider {
+        case .claude:
+            let hasState = FileManager.default.fileExists(
+                atPath: directory.appending(path: ".claude.json").path
+            ) || FileManager.default.fileExists(
+                atPath: directory.appending(path: "settings.json").path
+            )
+            guard hasState else { return nil }
+            source = .claudeConfigDir(path: directory.path)
+
+        case .codex:
+            let auth = directory.appending(path: "auth.json", directoryHint: .notDirectory)
+            guard FileManager.default.fileExists(atPath: auth.path) else { return nil }
+            source = .codexAuthFile(path: auth.path)
+        }
+
+        if let known = existing.first(where: {
+            $0.provider == provider && canonicalConfigDirectory(for: $0) == directory.path
+        }) {
+            return known
+        }
+
+        let defaultDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: provider == .claude ? ".claude" : ".codex", directoryHint: .isDirectory)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        var handle: String
+        if directory.path == defaultDirectory.path {
+            handle = "default"
+        } else {
+            handle = directory.lastPathComponent
+            while handle.hasPrefix(".") { handle.removeFirst() }
+            if handle.isEmpty { handle = "custom" }
+        }
+
+        if existing.contains(where: { $0.id == "\(provider.rawValue):\(handle)" }) {
+            let suffix = SHA256.hash(data: Data(directory.path.utf8))
+                .prefix(4)
+                .map { String(format: "%02x", $0) }
+                .joined()
+            handle += "-\(suffix)"
+        }
+        return AccountRef(provider: provider, handle: handle, source: source)
+    }
+
+    private static func canonicalConfigDirectory(for ref: AccountRef) -> String {
+        let url: URL
+        switch ref.source {
+        case let .claudeConfigDir(path):
+            url = URL(fileURLWithPath: path, isDirectory: true)
+        case let .codexAuthFile(path):
+            url = URL(fileURLWithPath: path).deletingLastPathComponent()
+        }
+        return url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     // MARK: Codex token reading (secret material — stays local to fetch)

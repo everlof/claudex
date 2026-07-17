@@ -166,5 +166,38 @@ import Testing
 
         #expect(heartbeat.claudeVersion == "2.1.207")
         #expect(!heartbeat.rateLimitsPresent)
+        #expect(heartbeat.lastLimitsSeenAt == nil)
+    }
+
+    @Test func schemaTwoHeartbeatCarriesForwardLastPositiveLimitsObservation() throws {
+        let data = Data(#"""
+        {
+          "schema_version":2,
+          "received_at":"2026-07-12T18:35:00.000Z",
+          "claude_version":"2.1.212",
+          "rate_limits_present":false,
+          "last_limits_seen_at":"2026-07-12T18:30:00.000Z"
+        }
+        """#.utf8)
+
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try data.write(to: ClaudeStatusCache.heartbeatFileURL(
+            profileID: "health-v2",
+            directory: root
+        ))
+
+        let heartbeat = try ClaudeStatusCache.loadHeartbeat(
+            profileID: "health-v2",
+            directory: root,
+            now: Date(timeIntervalSince1970: 1_783_900_100)
+        )
+
+        #expect(!heartbeat.rateLimitsPresent)
+        #expect(heartbeat.lastLimitsSeenAt == ISO8601DateFormatter().date(
+            from: "2026-07-12T18:30:00Z"
+        ))
     }
 }

@@ -35,9 +35,17 @@ import Testing
         _ = try fixture.run(arguments: ["--profile", profile], input: input)
         #expect(try String(contentsOf: cache, encoding: .utf8) == cached)
 
+        let positiveHeartbeat = try fixture.heartbeat(profile: profile)
+        #expect(positiveHeartbeat["schema_version"] as? Int == 2)
+        #expect(positiveHeartbeat["rate_limits_present"] as? Bool == true)
+        let lastLimitsSeenAt = try #require(positiveHeartbeat["last_limits_seen_at"] as? String)
+
         let empty = Data(#"{"version":"2.1.207","rate_limits":{}}"#.utf8)
         _ = try fixture.run(arguments: ["--profile", profile], input: empty)
         #expect(try String(contentsOf: cache, encoding: .utf8) == cached)
+        let emptyHeartbeat = try fixture.heartbeat(profile: profile)
+        #expect(emptyHeartbeat["rate_limits_present"] as? Bool == false)
+        #expect(emptyHeartbeat["last_limits_seen_at"] as? String == lastLimitsSeenAt)
 
         _ = try fixture.run(
             arguments: ["--profile", profile],
@@ -98,6 +106,16 @@ import Testing
 
         func cacheURL(profile: String) -> URL {
             home.appending(path: "Library/Application Support/Claudex/ClaudeStatus/\(profile).json")
+        }
+
+        func heartbeat(profile: String) throws -> [String: Any] {
+            let url = home.appending(
+                path: "Library/Application Support/Claudex/ClaudeStatus/\(profile).heartbeat.json"
+            )
+            let data = try Data(contentsOf: url)
+            return try #require(
+                JSONSerialization.jsonObject(with: data) as? [String: Any]
+            )
         }
 
         func run(arguments: [String], input: Data) throws -> Result {

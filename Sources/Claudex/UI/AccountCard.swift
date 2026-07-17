@@ -164,9 +164,14 @@ struct AccountCard: View {
                 rateLimitsPresent: rateLimitsPresent
             )
 
-        case let .connected(observedAt, version, stale):
+        case let .connected(valuesChangedAt, lastLimitsSeenAt, version, stale):
             loadStateContent
-            claudeSourceRow(observedAt: observedAt, version: version, stale: stale)
+            claudeSourceRow(
+                valuesChangedAt: valuesChangedAt,
+                lastLimitsSeenAt: lastLimitsSeenAt,
+                version: version,
+                stale: stale
+            )
 
         case let .needsRepair(message, observedAt):
             if entry.state.value != nil { loadStateContent }
@@ -296,7 +301,8 @@ struct AccountCard: View {
     }
 
     private func claudeSourceRow(
-        observedAt: Date,
+        valuesChangedAt: Date,
+        lastLimitsSeenAt: Date,
         version: String?,
         stale: Bool
     ) -> some View {
@@ -306,7 +312,7 @@ struct AccountCard: View {
                 .foregroundStyle(stale ? Severity.warning.color : provider.accentColor)
             Text(stale ? "Local feed stale" : "Local Claude Code feed")
                 .font(.system(size: 9.5, weight: .medium))
-            Text("· usage changed \(Fmt.relativePast(observedAt, now: now))")
+            Text("· seen \(Fmt.relativePast(lastLimitsSeenAt, now: now)) · changed \(Fmt.relativePast(valuesChangedAt, now: now))")
                 .font(.system(size: 9.5))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 3)
@@ -370,7 +376,7 @@ struct AccountCard: View {
 
     private var connectReviewText: String {
         let path = claudeSettingsPath ?? "this account’s Claude settings.json"
-        return "Claudex will update \(path) to run a small local status-line helper copied to its stable owner-only Application Support folder. An existing status-line command is chained and restored on disconnect. The documented feed requires Claude Code 2.1.80+ and a Claude.ai Pro/Max login; other authentication modes may not provide these fields.\n\nUsage cache: five-hour and weekly percentages/reset times, last-changed time, and Claude Code version. Health heartbeat: received time, version, and whether limits were present. The raw live payload—including credentials, prompts, responses, transcripts, working directory, and session ID—is discarded.\n\nRestore backup: owner-only metadata stores this config path and the exact original statusLine/command so it can be restored. It is never included in diagnostics or uploaded. No Anthropic request is made by Claudex. Claude Code requires normal workspace trust before running status-line commands."
+        return "Claudex will update \(path) to run a small local status-line helper copied to its stable owner-only Application Support folder. An existing status-line command is chained and restored on disconnect. The documented feed requires Claude Code 2.1.80+ and a Claude.ai Pro/Max login; other authentication modes may not provide these fields.\n\nUsage cache: five-hour and weekly percentages/reset times, last-changed time, and Claude Code version. Health heartbeat: received time, last-limits-seen time, version, and whether limits were present. The raw live payload—including credentials, prompts, responses, transcripts, working directory, and session ID—is discarded.\n\nRestore backup: owner-only metadata stores this config path and the exact original statusLine/command so it can be restored. It is never included in diagnostics or uploaded. No Anthropic request is made by Claudex. Claude Code requires normal workspace trust before running status-line commands."
     }
 
     private var isClaudeRepairReview: Bool {

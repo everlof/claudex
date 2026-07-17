@@ -77,6 +77,9 @@ struct ClaudeStatusHeartbeat: Sendable, Equatable {
     let receivedAt: Date
     let claudeVersion: String?
     let rateLimitsPresent: Bool
+    /// Most recent helper invocation whose payload actually contained subscription
+    /// limits. Schema-1 heartbeats infer this from `receivedAt` when limits were present.
+    let lastLimitsSeenAt: Date?
 }
 
 enum ClaudeStatusCacheError: Error, Sendable, Equatable, LocalizedError {
@@ -145,12 +148,14 @@ enum ClaudeStatusCache {
         let receivedAt: String
         let claudeVersion: String?
         let rateLimitsPresent: Bool
+        let lastLimitsSeenAt: String?
 
         enum CodingKeys: String, CodingKey {
             case schemaVersion = "schema_version"
             case receivedAt = "received_at"
             case claudeVersion = "claude_version"
             case rateLimitsPresent = "rate_limits_present"
+            case lastLimitsSeenAt = "last_limits_seen_at"
         }
     }
 
@@ -248,13 +253,25 @@ enum ClaudeStatusCache {
         } catch {
             throw .unreadable
         }
-        guard wire.schemaVersion == 1 else { throw .unsupportedSchema }
+        guard wire.schemaVersion == 1 || wire.schemaVersion == 2 else { throw .unsupportedSchema }
         guard let receivedAt = parseISO8601(wire.receivedAt) else { throw .invalidTimestamp }
         guard receivedAt <= now.addingTimeInterval(5 * 60) else { throw .futureTimestamp }
+        let explicitLastLimitsSeenAt: Date?
+        if let value = wire.lastLimitsSeenAt {
+            guard let parsed = parseISO8601(value) else { throw .invalidTimestamp }
+            guard parsed <= now.addingTimeInterval(5 * 60), parsed <= receivedAt else {
+                throw .futureTimestamp
+            }
+            explicitLastLimitsSeenAt = parsed
+        } else {
+            explicitLastLimitsSeenAt = nil
+        }
         return ClaudeStatusHeartbeat(
             receivedAt: receivedAt,
             claudeVersion: sanitizedVersion(wire.claudeVersion),
-            rateLimitsPresent: wire.rateLimitsPresent
+            rateLimitsPresent: wire.rateLimitsPresent,
+            lastLimitsSeenAt: explicitLastLimitsSeenAt
+                ?? (wire.rateLimitsPresent ? receivedAt : nil)
         )
     }
 

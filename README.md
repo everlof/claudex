@@ -164,12 +164,13 @@ responses. The helper retains only:
 
 - five-hour and weekly percentages,
 - their reset timestamps,
-- the last-changed time, and
+- the last-changed and last-limits-seen times, and
 - the Claude Code version.
 
-A separate minimal health heartbeat keeps only its received time, Claude Code version,
-and whether rate-limit fields were present. This lets the UI distinguish “helper never
-ran” from “helper ran but this login did not provide subscription limits.”
+A separate minimal health heartbeat keeps only its received time, last-limits-seen time,
+Claude Code version, and whether rate-limit fields were present. This lets the UI
+distinguish “helper never ran” from “helper ran but this login did not provide subscription
+limits.” A later partial event never erases the last valid usage snapshot.
 
 It discards the raw payload, including credentials, prompts/responses, working directory,
 session ID, and transcript path. Claudex does not call Anthropic or read Claude's Keychain
@@ -187,9 +188,9 @@ at connect time. If the setting changed afterward, Claudex refuses to overwrite 
 
 The feed appears after that account's first Claude response. Team/API/other authentication
 modes may not provide these subscription fields. Claude Code's normal
-workspace trust must allow status-line commands. When no session is active, Claudex shows
-the last changed snapshot and marks it stale after six hours or after a displayed reset
-passes.
+workspace trust must allow status-line commands. Claudex keeps the last valid snapshot,
+marks it stale when the latest event omitted limits or no valid limits have been seen for
+six hours, and independently expires each window after its reported reset.
 
 Claudex copies the signed helper to the stable owner-only path
 `~/Library/Application Support/Claudex/bin/`, so app and Homebrew upgrades do not break the

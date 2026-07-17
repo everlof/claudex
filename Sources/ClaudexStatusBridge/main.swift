@@ -97,12 +97,14 @@ private struct HeartbeatSnapshot: Encodable {
     let receivedAt: String
     let claudeVersion: String?
     let rateLimitsPresent: Bool
+    let lastLimitsSeenAt: String?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case receivedAt = "received_at"
         case claudeVersion = "claude_version"
         case rateLimitsPresent = "rate_limits_present"
+        case lastLimitsSeenAt = "last_limits_seen_at"
     }
 }
 
@@ -336,17 +338,7 @@ private func writeCache(_ status: ParsedStatus, profile: String) {
 private func writeHeartbeat(_ status: ParsedStatus, profile: String) {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let heartbeat = HeartbeatSnapshot(
-        schemaVersion: 1,
-        receivedAt: formatter.string(from: Date()),
-        claudeVersion: status.claudeVersion,
-        rateLimitsPresent: status.rateLimits?.containsValue == true
-    )
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    guard var data = try? encoder.encode(heartbeat) else { return }
-    data.append(0x0A)
-
+    let now = formatter.string(from: Date())
     let fileManager = FileManager.default
     guard let applicationSupport = fileManager.urls(
         for: .applicationSupportDirectory,
@@ -355,6 +347,19 @@ private func writeHeartbeat(_ status: ParsedStatus, profile: String) {
     let claudexDirectory = applicationSupport.appendingPathComponent("Claudex", isDirectory: true)
     let statusDirectory = claudexDirectory.appendingPathComponent("ClaudeStatus", isDirectory: true)
     let destination = statusDirectory.appendingPathComponent("\(profile).heartbeat.json", isDirectory: false)
+    let hasRateLimits = status.rateLimits?.containsValue == true
+    let heartbeat = HeartbeatSnapshot(
+        schemaVersion: 2,
+        receivedAt: now,
+        claudeVersion: status.claudeVersion,
+        rateLimitsPresent: hasRateLimits,
+        lastLimitsSeenAt: hasRateLimits ? now : cachedLastLimitsSeenAt(at: destination)
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    guard var data = try? encoder.encode(heartbeat) else { return }
+    data.append(0x0A)
+
     do {
         try ensureApplicationSupportDirectory(applicationSupport, fileManager: fileManager)
         try ensurePrivateDirectory(claudexDirectory, fileManager: fileManager)
@@ -368,6 +373,30 @@ private func writeHeartbeat(_ status: ParsedStatus, profile: String) {
     } catch {
         // Diagnostics heartbeat is best-effort and must not affect status-line output.
     }
+}
+
+/// Preserve the last positive observation when a later status-line event is emitted before
+/// the session's first API response. This reads only the bridge's own bounded heartbeat.
+private func cachedLastLimitsSeenAt(at url: URL) -> String? {
+    guard let values = try? url.resourceValues(forKeys: [
+        .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+    ]),
+          values.isRegularFile == true,
+          values.isSymbolicLink != true,
+          (values.fileSize ?? maximumInputBytes + 1) <= maximumInputBytes,
+          let data = try? Data(contentsOf: url),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+
+    if let value = root["last_limits_seen_at"] as? String, validISOTimestamp(value) {
+        return value
+    }
+    if (root["rate_limits_present"] as? Bool) == true,
+       let value = root["received_at"] as? String,
+       validISOTimestamp(value) {
+        return value
+    }
+    return nil
 }
 
 private func cachedRateLimitsEqual(_ rateLimits: RateLimits, at url: URL) -> Bool {

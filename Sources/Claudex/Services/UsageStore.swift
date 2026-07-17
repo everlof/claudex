@@ -85,6 +85,9 @@ final class UsageStore {
     private let claudeHelperDeployment = ClaudeStatusBridgeDeployment()
     private let detector = FrontmostDetector()
     private let notifier = ResetNotifier()
+    /// Validated config directories learned from live frontmost CLI processes. They stay
+    /// in memory only; Claudex does not persist or broadly scan arbitrary paths.
+    @ObservationIgnored private var observedAccountRefs: [AccountRef] = []
     private var timerTask: Task<Void, Never>?
     private var claudeFeedTask: Task<Void, Never>?
     private var frontmostTask: Task<Void, Never>?
@@ -126,7 +129,8 @@ final class UsageStore {
             lastRefresh = Date()
             for entry in entries where entry.ref.provider == .claude {
                 claudeIntegrations[entry.ref.id] = .connected(
-                    observedAt: entry.state.stamp ?? Date(),
+                    valuesChangedAt: entry.state.stamp ?? Date(),
+                    lastLimitsSeenAt: entry.state.stamp ?? Date(),
                     claudeVersion: "2.1.207",
                     stale: false
                 )
@@ -158,7 +162,12 @@ final class UsageStore {
     /// Re-scan the machine for accounts, preserving any already-loaded state for
     /// accounts that still exist.
     func rediscover() {
-        let refs = CredentialStore.discoverAll()
+        var refs = CredentialStore.discoverAll()
+        for ref in observedAccountRefs where !refs.contains(where: {
+            $0.provider == ref.provider && $0.source == ref.source
+        }) {
+            refs.append(ref)
+        }
         let previous = Dictionary(uniqueKeysWithValues: entries.map { ($0.ref.id, $0.state) })
         entries = refs.map { ref in
             AccountEntry(ref: ref, state: previous[ref.id] ?? .idle)
@@ -310,31 +319,23 @@ final class UsageStore {
     ) -> Bool {
         do {
             let snapshot = try ClaudeStatusCache.load(profileID: inspection.profileID)
-            if configurationIssue == nil,
-               let heartbeat = try? ClaudeStatusCache.loadHeartbeat(
+            let heartbeat = try? ClaudeStatusCache.loadHeartbeat(
                 profileID: inspection.profileID,
                 now: now
-            ),
-               heartbeat.receivedAt > snapshot.observedAt,
-               !heartbeat.rateLimitsPresent {
-                return commitClaudeState(
-                    at: index,
-                    integration: .waiting(
-                        lastReceivedAt: heartbeat.receivedAt,
-                        claudeVersion: heartbeat.claudeVersion,
-                        rateLimitsPresent: false
-                    ),
-                    usage: nil,
-                    fetchedAt: nil
-                )
-            }
+            )
+            let resolution = Self.resolveClaudeSnapshot(
+                snapshot,
+                heartbeat: heartbeat,
+                now: now
+            )
             let integration: ClaudeIntegrationState
             switch configurationIssue {
             case nil:
                 integration = .connected(
-                    observedAt: snapshot.observedAt,
-                    claudeVersion: snapshot.claudeVersion,
-                    stale: Self.isClaudeSnapshotStale(snapshot, now: now)
+                    valuesChangedAt: snapshot.observedAt,
+                    lastLimitsSeenAt: resolution.lastLimitsSeenAt,
+                    claudeVersion: resolution.claudeVersion,
+                    stale: resolution.stale
                 )
             case let .needsRepair(message):
                 integration = .needsRepair(
@@ -350,7 +351,7 @@ final class UsageStore {
             return commitClaudeState(
                 at: index,
                 integration: integration,
-                usage: snapshot.accountUsage(at: now),
+                usage: resolution.usage,
                 fetchedAt: snapshot.observedAt
             )
         } catch let error {
@@ -414,12 +415,47 @@ final class UsageStore {
 
     nonisolated static func isClaudeSnapshotStale(
         _ snapshot: ClaudeStatusSnapshot,
+        lastLimitsSeenAt: Date? = nil,
         now: Date
     ) -> Bool {
-        if now.timeIntervalSince(snapshot.observedAt) > 6 * 60 * 60 { return true }
-        return [snapshot.fiveHour?.resetsAt, snapshot.sevenDay?.resetsAt]
-            .compactMap { $0 }
-            .contains { $0 <= now }
+        if now.timeIntervalSince(lastLimitsSeenAt ?? snapshot.observedAt) > 6 * 60 * 60 {
+            return true
+        }
+        // One expired window must not invalidate another still-current window.
+        return snapshot.accountUsage(at: now).currentWindows.isEmpty
+    }
+
+    struct ClaudeSnapshotResolution: Sendable, Equatable {
+        let usage: AccountUsage
+        let lastLimitsSeenAt: Date
+        let claudeVersion: String?
+        let stale: Bool
+    }
+
+    /// Resolve a valid last-known-good snapshot independently from the newest health
+    /// heartbeat. A missing-limits heartbeat affects freshness, never data retention.
+    nonisolated static func resolveClaudeSnapshot(
+        _ snapshot: ClaudeStatusSnapshot,
+        heartbeat: ClaudeStatusHeartbeat?,
+        now: Date
+    ) -> ClaudeSnapshotResolution {
+        let lastLimitsSeenAt = max(
+            snapshot.observedAt,
+            heartbeat?.lastLimitsSeenAt ?? snapshot.observedAt
+        )
+        let latestSampleOmittedLimits = heartbeat.map {
+            $0.receivedAt > lastLimitsSeenAt && !$0.rateLimitsPresent
+        } ?? false
+        return ClaudeSnapshotResolution(
+            usage: snapshot.accountUsage(at: now),
+            lastLimitsSeenAt: lastLimitsSeenAt,
+            claudeVersion: heartbeat?.claudeVersion ?? snapshot.claudeVersion,
+            stale: latestSampleOmittedLimits || isClaudeSnapshotStale(
+                snapshot,
+                lastLimitsSeenAt: lastLimitsSeenAt,
+                now: now
+            )
+        )
     }
 
     private func claudeConfigDir(for ref: AccountRef) -> String? {
@@ -499,7 +535,31 @@ final class UsageStore {
                     try? await Task.sleep(for: self.frontmostInterval)
                     continue
                 }
-                let id = detection.accountID
+                var id = detection.accountID
+                if id == nil,
+                   let provider = detection.provider,
+                   let configDir = detection.configDir,
+                   let observed = CredentialStore.discoverObserved(
+                    provider: provider,
+                    configDir: configDir,
+                    existing: self.entries.map(\.ref) + self.observedAccountRefs
+                   ) {
+                    let isAlreadyKnown = self.entries.contains(where: {
+                        $0.ref.provider == observed.provider && $0.ref.source == observed.source
+                    })
+                    if !isAlreadyKnown && !self.observedAccountRefs.contains(where: {
+                        $0.provider == observed.provider && $0.source == observed.source
+                    }) {
+                        self.observedAccountRefs.append(observed)
+                        self.rediscover()
+                        if observed.provider == .claude {
+                            self.refreshClaudeStatus()
+                        } else {
+                            await self.refreshAll(force: true, onlyAccountID: observed.id)
+                        }
+                    }
+                    id = observed.id
+                }
                 if self.frontmostAccountID != id {
                     self.frontmostAccountID = id
                     // CLAUDEX_DEBUG_FRONTMOST=1 logs each change to Console/`log stream`,
@@ -697,7 +757,7 @@ final class UsageStore {
         return entries.map { entry in
             guard entry.ref.provider == .claude else { return entry }
             guard let integration = claudeIntegrations[entry.ref.id],
-                  case let .connected(_, _, stale) = integration,
+            case let .connected(_, _, _, stale) = integration,
                   !stale
             else {
                 return AccountEntry(ref: entry.ref, state: .idle)
@@ -759,7 +819,8 @@ final class UsageStore {
             "app_binary_sha256: \(appFingerprint)",
             "macos_version: \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
             "diagnostics_schema: 1",
-            "passive_feed_schema: 1",
+            "usage_cache_schema: 1",
+            "heartbeat_schema: 2",
             "claude_data_source: Claude Code local status-line feed",
             "claude_helper_present: \(FileManager.default.isExecutableFile(atPath: claudeHelperExecutable.path))",
             "account_counts: claude=\(entries.filter { $0.ref.provider == .claude }.count) codex=\(entries.filter { $0.ref.provider == .codex }.count)",
@@ -813,9 +874,10 @@ final class UsageStore {
         case let .waiting(lastReceivedAt, version, rateLimitsPresent):
             let seen = lastReceivedAt.map { max(0, Int(now.timeIntervalSince($0))) }
             return "waiting helper_seen=\(seen == nil ? "false" : "true") age_seconds=\(seen ?? -1) cli=\(version ?? "unknown") limits_present=\(rateLimitsPresent.map(String.init) ?? "unknown")"
-        case let .connected(observedAt, version, stale):
-            let age = max(0, Int(now.timeIntervalSince(observedAt)))
-            return "connected stale=\(stale) age_seconds=\(age) cli=\(version ?? "unknown")"
+        case let .connected(valuesChangedAt, lastLimitsSeenAt, version, stale):
+            let changedAge = max(0, Int(now.timeIntervalSince(valuesChangedAt)))
+            let seenAge = max(0, Int(now.timeIntervalSince(lastLimitsSeenAt)))
+            return "connected stale=\(stale) limits_seen_age_seconds=\(seenAge) values_changed_age_seconds=\(changedAge) cli=\(version ?? "unknown")"
         case let .needsRepair(_, observedAt):
             return "needs_repair cache=\(observedAt == nil ? "missing" : "present")"
         case let .modified(_, observedAt):

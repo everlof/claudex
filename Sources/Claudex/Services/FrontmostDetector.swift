@@ -32,6 +32,9 @@ struct FrontmostDetector: Sendable {
         let provider: Provider?
         let terminal: SupportedTerminal?
         let workingDirectory: String?
+        /// Config directory reported by a live terminal process, even if it has not yet
+        /// been discovered through Claudex's conventional home-directory scan.
+        let configDir: String?
         /// Opening Claudex's own popover should not erase the session that caused it to open.
         let preservesPreviousSession: Bool
 
@@ -42,6 +45,7 @@ struct FrontmostDetector: Sendable {
             provider: nil,
             terminal: nil,
             workingDirectory: nil,
+            configDir: nil,
             preservesPreviousSession: false
         )
     }
@@ -66,6 +70,7 @@ struct FrontmostDetector: Sendable {
                 provider: nil,
                 terminal: nil,
                 workingDirectory: nil,
+                configDir: nil,
                 preservesPreviousSession: true
             )
         }
@@ -78,6 +83,7 @@ struct FrontmostDetector: Sendable {
                 provider: desktop.provider,
                 terminal: nil,
                 workingDirectory: nil,
+                configDir: nil,
                 preservesPreviousSession: false
             )
         }
@@ -91,6 +97,7 @@ struct FrontmostDetector: Sendable {
             provider: session.provider,
             terminal: terminal,
             workingDirectory: session.workingDirectory,
+            configDir: session.configDir,
             preservesPreviousSession: false
         )
     }
