@@ -7,6 +7,9 @@ Claudex is a local macOS menu-bar app.
 - Claude config-directory names, to identify local account slots.
 - An opt-in Claude Code status-line cache containing only five-hour/weekly usage,
   reset timestamps, last-changed/last-limits-seen times, and Claude Code version.
+- When **Direct Claude refresh (Experimental)** is explicitly enabled, the
+  `.credentials.json` file inside each discovered Claude config directory. Its current
+  access token and subscription label are held only inside the fetch operation.
 - Codex login metadata and tokens from local `CODEX_HOME` directories.
 - Codex usage endpoint responses needed to render rate-limit state.
 - Optional local `ccusage` output for historical usage charts.
@@ -21,18 +24,23 @@ Claudex is a local macOS menu-bar app.
 
 ## Network use
 
-Claudex makes no Claude/Anthropic request. Claude usage is delivered by the user's
-normal Claude Code session to a local helper. Claudex calls Codex's read-only usage
-endpoints. It does not operate a MJUKIS or Everlof server and does not upload usage
-data to MJUKIS.
+By default Claudex makes no Claude/Anthropic request; Claude usage is delivered by the
+user's normal Claude Code session to a local helper. If **Direct Claude refresh
+(Experimental)** is explicitly enabled and a current credentials file exists, Claudex
+calls Anthropic's read-only `https://api.anthropic.com/api/oauth/usage` endpoint. Claudex
+also calls Codex's read-only usage endpoints. It does not operate a MJUKIS or Everlof
+server and does not upload usage data to MJUKIS.
 
 Usage history invokes only an already-installed `ccusage` executable. Claudex never
 runs `npx` or a package manager to download or update that third-party tool.
 
 ## Secrets
 
-Claudex never reads Claude credentials or Keychain items. Codex tokens are read only
-inside the fetch layer and are not written to app logs, history, or the UI model.
+Claudex never reads Claude Keychain items. The optional direct mode reads only the access
+token and expiry metadata from a config slot's `.credentials.json`; it never reads or uses
+the refresh token, refreshes credentials, or changes the file. Claude and Codex access
+tokens remain inside the fetch layer and are not written to logs, history, diagnostics,
+or the UI model.
 
 Claude Code's raw status-line payload is never stored. The helper allowlists the four
 usage/reset values, last-changed/last-limits-seen times, and Claude Code version; it

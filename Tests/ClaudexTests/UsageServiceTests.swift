@@ -9,6 +9,34 @@ import Testing
         #expect(UsageService.userAgent(bundleVersion: nil) == "claudex/development")
     }
 
+    @Test func claudeOAuthRequestMatchesFileFirstCodexBarHeaders() {
+        let request = UsageService.claudeOAuthRequest(accessToken: "secret-test-token")
+
+        #expect(request.url?.absoluteString == "https://api.anthropic.com/api/oauth/usage")
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret-test-token")
+        #expect(request.value(forHTTPHeaderField: "anthropic-beta") == "oauth-2025-04-20")
+        #expect(request.value(forHTTPHeaderField: "User-Agent") == "claude-code/2.1.0")
+    }
+
+    @Test func normalizesClaudeOAuthHeadlineWindows() throws {
+        let response = ClaudeOAuthUsageResponse(
+            fiveHour: .init(utilization: 37.5, resetsAt: "2030-01-01T05:00:00Z"),
+            sevenDay: .init(utilization: 62, resetsAt: "2030-01-07T00:00:00.000Z")
+        )
+
+        let usage = try UsageService.normalizeClaudeOAuthUsage(
+            response,
+            planLabel: "Max",
+            now: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        #expect(usage.planLabel == "Max")
+        #expect(usage.windows.map(\.id) == ["5h", "7d"])
+        #expect(usage.windows.map(\.percent) == [38, 62])
+        #expect(usage.windows.map(\.windowLength) == [18_000, 604_800])
+    }
+
     @Test func codexWindowLabelsUseReportedDuration() {
         #expect(UsageService.codexWindowLabel(
             windowLength: 5 * 60 * 60,

@@ -173,9 +173,18 @@ distinguish “helper never ran” from “helper ran but this login did not pro
 limits.” A later partial event never erases the last valid usage snapshot.
 
 It discards the raw payload, including credentials, prompts/responses, working directory,
-session ID, and transcript path. Claudex does not call Anthropic or read Claude's Keychain
-token. The cache stays in `~/Library/Application Support/Claudex/` with owner-only
-permissions.
+session ID, and transcript path. In the default mode Claudex does not call Anthropic or
+read Claude credentials. The cache stays in `~/Library/Application Support/Claudex/` with
+owner-only permissions.
+
+**Settings → Direct Claude refresh (Experimental)** adds the narrow file-first fallback
+used by CodexBar. When explicitly enabled, Claudex looks only for `.credentials.json`
+inside each discovered Claude config slot and uses a current access token to call
+Anthropic's read-only `/api/oauth/usage` endpoint. It never queries Keychain, uses a
+refresh token, refreshes credentials, or writes the file. Missing, unreadable, or expired
+files simply fall back to the local status-line feed. This option is useful on Claude Code
+installations that already maintain the credentials file; many current macOS installations
+store credentials only in Keychain, so the fallback will report that no file is available.
 
 To make disconnect reversible, setup also keeps an owner-only restore record containing
 the Claude config path and the exact original `statusLine` object. If that command already

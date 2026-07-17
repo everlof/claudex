@@ -17,6 +17,8 @@ struct AccountCard: View {
     var onHandoff: ((AccountRef) -> String?)? = nil
     /// Passive Claude Code integration state. Nil for Codex and demo fixtures.
     var claudeIntegration: ClaudeIntegrationState? = nil
+    /// Present after an opt-in, file-backed OAuth refresh succeeds for this account.
+    var claudeDirectRefreshAt: Date? = nil
     var claudeSettingsPath: String? = nil
     var onConnectClaude: (() -> String?)? = nil
     var onDisconnectClaude: (() -> String?)? = nil
@@ -129,7 +131,10 @@ struct AccountCard: View {
 
     @ViewBuilder
     private var content: some View {
-        if provider == .claude, let claudeIntegration {
+        if provider == .claude, let refreshedAt = claudeDirectRefreshAt {
+            loadStateContent
+            claudeDirectSourceRow(refreshedAt: refreshedAt)
+        } else if provider == .claude, let claudeIntegration {
             claudeContent(claudeIntegration)
         } else {
             loadStateContent
@@ -328,6 +333,25 @@ struct AccountCard: View {
             }
             .buttonStyle(.plain)
             .help("Disconnect local Claude Code feed")
+        }
+        .padding(.top, 1)
+    }
+
+    private func claudeDirectSourceRow(refreshedAt: Date) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(provider.accentColor)
+            Text("Direct Claude refresh")
+                .font(.system(size: 9.5, weight: .medium))
+            Text("· updated \(Fmt.relativePast(refreshedAt, now: now))")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 3)
+            Image(systemName: "key.slash")
+                .font(.system(size: 8.5))
+                .foregroundStyle(.tertiary)
+                .help("Credential file only; no Keychain access")
         }
         .padding(.top, 1)
     }

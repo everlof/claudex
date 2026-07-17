@@ -34,8 +34,14 @@ final class UsageStore {
     var menuBarSubject: MenuBarSubject = .frontmost {
         didSet { UserDefaults.standard.set(menuBarSubject.rawValue, forKey: Self.subjectKey) }
     }
+    /// Experimental, explicit opt-in. This reads only `.credentials.json` inside each
+    /// Claude config slot; it never invokes Keychain or refreshes/writes credentials.
+    private(set) var claudeDirectRefreshEnabled = false
+    private(set) var claudeDirectRefreshStatus: String?
+    private(set) var claudeDirectRefreshDates: [String: Date] = [:]
     private static let styleKey = "menuBarStyle"
     private static let subjectKey = "menuBarSubject"
+    private static let claudeDirectRefreshKey = "claudeDirectRefreshEnabled"
 
     /// Reset-notification settings, persisted. Default: ping when a 5-hour or weekly
     /// window that sat at ≥85% rolls over — that's when fresh budget actually matters.
@@ -112,6 +118,7 @@ final class UsageStore {
         if let raw = defaults.string(forKey: Self.subjectKey), let subject = MenuBarSubject(rawValue: raw) {
             menuBarSubject = subject
         }
+        claudeDirectRefreshEnabled = defaults.bool(forKey: Self.claudeDirectRefreshKey)
         if defaults.object(forKey: "notifyOnReset") != nil {
             notifyOnReset = defaults.bool(forKey: "notifyOnReset")
         }
@@ -175,6 +182,25 @@ final class UsageStore {
         let activeIDs = Set(refs.map(\.id))
         retryNotBefore = retryNotBefore.filter { activeIDs.contains($0.key) }
         claudeIntegrations = claudeIntegrations.filter { activeIDs.contains($0.key) }
+        claudeDirectRefreshDates = claudeDirectRefreshDates.filter { activeIDs.contains($0.key) }
+    }
+
+    func setClaudeDirectRefreshEnabled(_ enabled: Bool) {
+        guard claudeDirectRefreshEnabled != enabled else { return }
+        claudeDirectRefreshEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.claudeDirectRefreshKey)
+        if enabled {
+            claudeDirectRefreshStatus = "Checking Claude credential files…"
+            refreshNow()
+        } else {
+            claudeDirectRefreshDates.removeAll()
+            claudeDirectRefreshStatus = nil
+            refreshClaudeStatus()
+        }
+    }
+
+    func claudeDirectRefreshDate(for accountID: String) -> Date? {
+        claudeDirectRefreshDates[accountID]
     }
 
     // MARK: Claude Code passive feed
@@ -398,6 +424,12 @@ final class UsageStore {
             changed = true
         }
 
+        // While direct refresh is active, the passive watcher continues to report its
+        // health but must not overwrite or erase the newer network-backed snapshot.
+        if claudeDirectRefreshEnabled, claudeDirectRefreshDates[id] != nil {
+            return changed
+        }
+
         if let usage, let fetchedAt {
             if entries[index].state.value != usage || entries[index].state.stamp != fetchedAt {
                 entries[index].state = .loaded(usage, fetchedAt: fetchedAt)
@@ -594,6 +626,9 @@ final class UsageStore {
         rediscover()
         refreshClaudeStatus()
         guard !entries.isEmpty else {
+            if claudeDirectRefreshEnabled {
+                claudeDirectRefreshStatus = "No Claude accounts found; direct refresh is idle."
+            }
             isRefreshing = false
             return
         }
@@ -619,7 +654,9 @@ final class UsageStore {
 
         let selectionTime = Date()
         let refs = entries.filter { entry in
-            guard entry.ref.provider == .codex else { return false }
+            guard entry.ref.provider == .codex || claudeDirectRefreshEnabled else {
+                return false
+            }
             return Self.shouldRefresh(
                 entry: entry,
                 onlyAccountID: onlyAccountID,
@@ -627,8 +664,12 @@ final class UsageStore {
                 now: selectionTime
             )
         }.map(\.ref)
-        // Stagger Codex accounts so they don't burst the same host simultaneously.
+        // Stagger network-backed accounts so they don't burst provider hosts simultaneously.
         let staggered = refs.enumerated().map { (index, ref) in (ref, Double(index) * 0.25) }
+        let directClaudeAttemptCount = refs.count { $0.provider == .claude }
+        var directClaudeSuccessCount = 0
+        var directClaudeMissingCount = 0
+        var needsPassiveClaudeRestore = false
 
         await withTaskGroup(of: (String, Result<AccountUsage, UsageError>).self) { group in
             for (ref, delay) in staggered {
@@ -644,11 +685,15 @@ final class UsageStore {
                     var lastError: UsageError = .network("unknown")
                     for attempt in 0..<maxAttempts {
                         do {
+                            let usage: AccountUsage
+                            if ref.provider == .claude {
+                                usage = try await service.fetchClaudeFromCredentialsFile(ref)
+                            } else {
+                                usage = try await service.fetch(ref)
+                            }
                             return (
                                 ref.id,
-                                .success(
-                                    try await service.fetch(ref)
-                                )
+                                .success(usage)
                             )
                         } catch let error as UsageError {
                             lastError = error
@@ -671,12 +716,32 @@ final class UsageStore {
                 case let .success(usage):
                     retryNotBefore[id] = nil
                     entries[idx].state = .loaded(usage, fetchedAt: now)
+                    if entries[idx].ref.provider == .claude {
+                        claudeDirectRefreshDates[id] = now
+                        directClaudeSuccessCount += 1
+                    }
                 case let .failure(error):
                     if case let .rateLimited(retryAfter) = error,
                        let retryAfter, retryAfter > 0 {
                         retryNotBefore[id] = now.addingTimeInterval(retryAfter)
                     } else {
                         retryNotBefore[id] = nil
+                    }
+                    if entries[idx].ref.provider == .claude {
+                        if error == .noCredential || error == .tokenExpired {
+                            directClaudeMissingCount += 1
+                        }
+                        switch error {
+                        case .noCredential, .credentialUnreadable, .tokenExpired:
+                            if claudeDirectRefreshDates.removeValue(forKey: id) != nil {
+                                needsPassiveClaudeRestore = true
+                            }
+                        case .rateLimited, .http, .network, .decoding:
+                            break
+                        }
+                        // Direct Claude refresh is only a fallback. Its failure must not
+                        // replace the passive feed with an error card.
+                        continue
                     }
                     // A transient error must not erase good data we already have — keep
                     // showing the last snapshot rather than flashing an error card.
@@ -686,6 +751,25 @@ final class UsageStore {
                         entries[idx].state = .failed(error, at: now)
                     }
                 }
+            }
+        }
+
+        if needsPassiveClaudeRestore {
+            refreshClaudeStatus()
+        }
+
+        if claudeDirectRefreshEnabled, onlyAccountID == nil {
+            if directClaudeSuccessCount > 0 {
+                let suffix = directClaudeSuccessCount == 1 ? "account" : "accounts"
+                claudeDirectRefreshStatus = "Active for \(directClaudeSuccessCount) \(suffix); Keychain is never queried."
+            } else if !claudeDirectRefreshDates.isEmpty {
+                claudeDirectRefreshStatus = "Refresh delayed; showing the last direct snapshot."
+            } else if directClaudeAttemptCount > 0, directClaudeMissingCount == directClaudeAttemptCount {
+                claudeDirectRefreshStatus = "No current credential files found; using the local feed."
+            } else if directClaudeAttemptCount > 0 {
+                claudeDirectRefreshStatus = "Direct refresh unavailable; using the local feed."
+            } else {
+                claudeDirectRefreshStatus = "No Claude accounts found; direct refresh is idle."
             }
         }
 
@@ -756,6 +840,7 @@ final class UsageStore {
         guard DemoMode.fixture == nil else { return entries }
         return entries.map { entry in
             guard entry.ref.provider == .claude else { return entry }
+            if claudeDirectRefreshDates[entry.ref.id] != nil { return entry }
             guard let integration = claudeIntegrations[entry.ref.id],
             case let .connected(_, _, _, stale) = integration,
                   !stale
@@ -781,7 +866,8 @@ final class UsageStore {
         if entries.contains(where: { $0.state.value == nil && $0.state.error != nil }) {
             return true
         }
-        return claudeIntegrations.values.contains { state in
+        return claudeIntegrations.contains { id, state in
+            if claudeDirectRefreshDates[id] != nil { return false }
             switch state {
             case .needsRepair, .modified, .failed: return true
             case .disconnected, .waiting, .connected: return false
@@ -821,7 +907,8 @@ final class UsageStore {
             "diagnostics_schema: 1",
             "usage_cache_schema: 1",
             "heartbeat_schema: 2",
-            "claude_data_source: Claude Code local status-line feed",
+            "claude_data_sources: local_status_line,optional_direct_credentials_file",
+            "claude_direct_refresh: enabled=\(claudeDirectRefreshEnabled) active_accounts=\(claudeDirectRefreshDates.count) keychain_access=false token_refresh=false",
             "claude_helper_present: \(FileManager.default.isExecutableFile(atPath: claudeHelperExecutable.path))",
             "account_counts: claude=\(entries.filter { $0.ref.provider == .claude }.count) codex=\(entries.filter { $0.ref.provider == .codex }.count)",
         ]
@@ -834,7 +921,8 @@ final class UsageStore {
                 claudeIndex += 1
                 let windows = entry.state.value?.windows.map(\.id).joined(separator: ",") ?? "none"
                 let state = diagnosticClaudeState(claudeIntegrations[entry.ref.id], now: now)
-                lines.append("claude[\(claudeIndex)] state=\(state) windows=\(windows)")
+                let source = claudeDirectRefreshDates[entry.ref.id] == nil ? "local_feed" : "direct_file"
+                lines.append("claude[\(claudeIndex)] state=\(state) source=\(source) windows=\(windows)")
 
             case .codex:
                 codexIndex += 1

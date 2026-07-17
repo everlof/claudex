@@ -14,14 +14,96 @@ struct UsageService: Sendable {
         self.session = URLSession(configuration: config)
     }
 
-    /// Fetch a normalized Codex snapshot. Claude never enters this service: its usage is
-    /// ingested from Claude Code's local status-line cache instead of an OAuth endpoint.
+    /// Fetch a normalized Codex snapshot.
     func fetch(_ ref: AccountRef) async throws(UsageError) -> AccountUsage {
         let token = try CredentialStore.readCodexToken(for: ref)
         return try await fetchCodex(
             accessToken: token.accessToken,
             accountId: token.accountId,
             displayName: token.displayName
+        )
+    }
+
+    /// Optional Claude fallback modeled after CodexBar's file-first OAuth path. The
+    /// credential reader never accesses Keychain and never refreshes or rewrites tokens.
+    func fetchClaudeFromCredentialsFile(_ ref: AccountRef) async throws(UsageError) -> AccountUsage {
+        let credentials = try ClaudeOAuthFileCredentials.load(for: ref)
+        let request = Self.claudeOAuthRequest(accessToken: credentials.accessToken)
+        let response: ClaudeOAuthUsageResponse = try await getJSON(request)
+        return try Self.normalizeClaudeOAuthUsage(
+            response,
+            planLabel: credentials.planLabel,
+            now: Date()
+        )
+    }
+
+    static func claudeOAuthRequest(accessToken: String) -> URLRequest {
+        var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("claude-code/2.1.0", forHTTPHeaderField: "User-Agent")
+        return request
+    }
+
+    static func normalizeClaudeOAuthUsage(
+        _ response: ClaudeOAuthUsageResponse,
+        planLabel: String?,
+        now: Date
+    ) throws(UsageError) -> AccountUsage {
+        var windows: [UsageWindow] = []
+        if let window = response.fiveHour {
+            windows.append(claudeOAuthWindow(
+                id: "5h",
+                label: "5-hour",
+                length: 5 * 60 * 60,
+                wire: window,
+                now: now
+            ))
+        }
+        if let window = response.sevenDay {
+            windows.append(claudeOAuthWindow(
+                id: "7d",
+                label: "7-day",
+                length: 7 * 24 * 60 * 60,
+                wire: window,
+                now: now
+            ))
+        }
+        guard !windows.isEmpty else {
+            throw .decoding("Claude returned no supported usage windows.")
+        }
+        return AccountUsage(
+            planLabel: planLabel,
+            displayName: nil,
+            accountUUID: nil,
+            windows: windows,
+            extraWindows: [],
+            resetCredits: [],
+            resetCreditCount: nil
+        )
+    }
+
+    private static func claudeOAuthWindow(
+        id: String,
+        label: String,
+        length: TimeInterval,
+        wire: ClaudeOAuthUsageWindow,
+        now: Date
+    ) -> UsageWindow {
+        let fraction = max(0, min(1, (wire.utilization ?? 0) / 100))
+        let resetsAt = parseISO(wire.resetsAt)
+        return UsageWindow(
+            id: id,
+            label: label,
+            fraction: fraction,
+            resetsAt: resetsAt,
+            windowLength: length,
+            scope: nil,
+            severity: .from(fraction: fraction),
+            isExpired: resetsAt.map { $0 <= now } ?? false
         )
     }
 
@@ -189,6 +271,11 @@ struct UsageService: Sendable {
         request.httpMethod = "GET"
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
 
+        return try await getJSON(request)
+    }
+
+    private func getJSON<T: Decodable>(_ request: URLRequest) async throws(UsageError) -> T {
+
         let data: Data
         let response: URLResponse
         do {
@@ -284,4 +371,24 @@ struct UsageService: Sendable {
         f.formatOptions = [.withInternetDateTime]
         return f
     }()
+}
+
+struct ClaudeOAuthUsageResponse: Decodable, Sendable {
+    let fiveHour: ClaudeOAuthUsageWindow?
+    let sevenDay: ClaudeOAuthUsageWindow?
+
+    enum CodingKeys: String, CodingKey {
+        case fiveHour = "five_hour"
+        case sevenDay = "seven_day"
+    }
+}
+
+struct ClaudeOAuthUsageWindow: Decodable, Sendable {
+    let utilization: Double?
+    let resetsAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case utilization
+        case resetsAt = "resets_at"
+    }
 }

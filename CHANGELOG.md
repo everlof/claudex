@@ -7,6 +7,11 @@ versioning for public releases.
 
 ## [Unreleased]
 
+### Added
+- An opt-in, file-only direct Claude usage refresh modeled after CodexBar. It never
+  queries Keychain, refreshes tokens, or rewrites Claude credentials, and falls back to
+  the passive local feed when no current `.credentials.json` is available.
+
 ### Changed
 - Claude's passive feed now tracks last-limits-seen separately from last-value-change
   time, so unchanged but healthy usage stays fresh.

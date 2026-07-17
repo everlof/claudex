@@ -54,6 +54,7 @@ struct MenuContent: View {
                                     handoff: store.handoffRecommendation(for: entry.ref.id),
                                     onHandoff: { store.launch(account: $0) },
                                     claudeIntegration: store.claudeIntegration(for: entry.ref.id),
+                                    claudeDirectRefreshAt: store.claudeDirectRefreshDate(for: entry.ref.id),
                                     claudeSettingsPath: store.claudeSettingsPath(for: entry.ref.id),
                                     onConnectClaude: { store.connectClaude(accountID: entry.ref.id) },
                                     onDisconnectClaude: { store.disconnectClaude(accountID: entry.ref.id) },
@@ -250,6 +251,14 @@ private struct SettingsMenu: View {
                     get: { store.launchAtLogin },
                     set: { store.setLaunchAtLogin($0) }
                 ))
+            }
+            Divider()
+            Toggle("Direct Claude refresh (Experimental)", isOn: Binding(
+                get: { store.claudeDirectRefreshEnabled },
+                set: { store.setClaudeDirectRefreshEnabled($0) }
+            ))
+            if store.claudeDirectRefreshEnabled, let status = store.claudeDirectRefreshStatus {
+                Text(status)
             }
             Divider()
             Menu("Notifications") {
