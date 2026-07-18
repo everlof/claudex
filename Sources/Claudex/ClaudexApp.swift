@@ -40,7 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.animates = true
         popover.contentSize = NSSize(width: 340, height: 560)
         popover.contentViewController = NSHostingController(
-            rootView: MenuContent(store: store)
+            rootView: MenuContent(
+                store: store,
+                onOpenStandaloneWindow: { [weak self] in self?.closePopover() }
+            )
         )
 
         store.start()

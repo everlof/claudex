@@ -6,6 +6,9 @@ struct MenuContent: View {
     /// Caps the scroll area's height. Defaults to the popover size; capture mode raises it
     /// so every account fits in one screenshot.
     var maxContentHeight: CGFloat = 520
+    /// Called before handing off to a standalone window so the transient panel does not
+    /// remain floating behind it. Capture mode uses the default no-op.
+    var onOpenStandaloneWindow: () -> Void = {}
     /// Ticks every second so relative countdowns stay live while the panel is open.
     @State private var now = Date()
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -24,7 +27,11 @@ struct MenuContent: View {
                             UsageChartView(
                                 store: store.history,
                                 mode: .compact,
-                                onBreakout: { UsageHistoryWindow.show(store: store.history) }
+                                onBreakout: {
+                                    openStandaloneWindow {
+                                        UsageHistoryWindow.show(store: store.history)
+                                    }
+                                }
                             )
 
                             if showsPortfolio {
@@ -117,7 +124,10 @@ struct MenuContent: View {
             // countdown labels) doesn't re-evaluate the open menu's contents and make it
             // flicker. This view reads only `store`, so it re-renders on setting changes, not
             // on every clock tick.
-            SettingsMenu(store: store)
+            SettingsMenu(
+                store: store,
+                onOpenStandaloneWindow: onOpenStandaloneWindow
+            )
 
             Button {
                 store.refreshNow()
@@ -145,6 +155,11 @@ struct MenuContent: View {
         let n = store.entries.count
         let accounts = "\(n) account\(n == 1 ? "" : "s")"
         return accounts
+    }
+
+    private func openStandaloneWindow(_ action: () -> Void) {
+        onOpenStandaloneWindow()
+        action()
     }
 
     // MARK: Footer
@@ -222,6 +237,7 @@ struct MenuContent: View {
 /// menu (especially the Notifications submenu) from flickering.
 private struct SettingsMenu: View {
     @Bindable var store: UsageStore
+    let onOpenStandaloneWindow: () -> Void
 
     var body: some View {
         Menu {
@@ -242,6 +258,7 @@ private struct SettingsMenu: View {
                 // The user disabled the item in System Settings; we can't flip it back, so
                 // send them there. A plain button (not a toggle) makes that clear.
                 Button("Enable “Launch at login” in Settings…") {
+                    onOpenStandaloneWindow()
                     if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
                         NSWorkspace.shared.open(url)
                     }
@@ -278,9 +295,11 @@ private struct SettingsMenu: View {
             }
             Divider()
             Button("Limit history…") {
+                onOpenStandaloneWindow()
                 LimitHistoryWindow.show(history: store.limitHistory)
             }
             Button("Preview diagnostics…") {
+                onOpenStandaloneWindow()
                 DiagnosticsWindow.show(report: store.safeDiagnosticsReport())
             }
         } label: {
