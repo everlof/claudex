@@ -151,6 +151,7 @@ final class UsageStore {
             frontmostProvider = entries.first { $0.ref.id == fixture.frontmostAccountID }?.ref.provider
             return
         }
+        restoreMistakenClaudeScienceIntegrations()
         rediscover()
         let hasConnectedClaude = entries.contains { entry in
             guard let configDir = claudeConfigDir(for: entry.ref) else { return false }
@@ -187,6 +188,25 @@ final class UsageStore {
         retryNotBefore = retryNotBefore.filter { activeIDs.contains($0.key) }
         claudeIntegrations = claudeIntegrations.filter { activeIDs.contains($0.key) }
         claudeDirectRefreshDates = claudeDirectRefreshDates.filter { activeIDs.contains($0.key) }
+    }
+
+    /// Older Claudex builds mistook Claude Science's ~/.claude-science application data
+    /// root for a Claude Code account. Restore only our exact managed status-line change
+    /// before discovery hides that pseudo-account. A conflicting user edit is never
+    /// overwritten; the installer retains its recovery metadata in that rare case.
+    private func restoreMistakenClaudeScienceIntegrations() {
+        for directory in CredentialStore.claudeScienceDataDirs() {
+            guard claudeInstaller.hasManagedInstallation(configDir: directory.path) else {
+                continue
+            }
+            do {
+                if try claudeInstaller.uninstall(configDir: directory.path) == .modifiedNotRestored {
+                    NSLog("[claudex] Claude Science cleanup left modified settings unchanged")
+                }
+            } catch {
+                NSLog("[claudex] Claude Science cleanup failed without changing settings")
+            }
+        }
     }
 
     func setClaudeDirectRefreshEnabled(_ enabled: Bool) {

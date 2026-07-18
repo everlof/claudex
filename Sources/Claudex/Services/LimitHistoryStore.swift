@@ -108,8 +108,22 @@ actor LimitHistoryStore {
     func snapshot(since: Date, now: Date = Date()) throws -> LimitHistorySnapshot {
         try ensureLoaded(now: now)
         return LimitHistorySnapshot(
-            samples: samples.filter { $0.observedAt >= since && $0.observedAt <= now.addingTimeInterval(5 * 60) },
-            resets: resets.filter { $0.detectedAt >= since && $0.detectedAt <= now.addingTimeInterval(5 * 60) },
+            samples: samples.filter {
+                $0.observedAt >= since
+                    && $0.observedAt <= now.addingTimeInterval(5 * 60)
+                    && !Self.isLegacyClaudeScienceRecord(
+                        provider: $0.provider,
+                        accountID: $0.accountID
+                    )
+            },
+            resets: resets.filter {
+                $0.detectedAt >= since
+                    && $0.detectedAt <= now.addingTimeInterval(5 * 60)
+                    && !Self.isLegacyClaudeScienceRecord(
+                        provider: $0.provider,
+                        accountID: $0.accountID
+                    )
+            },
             loadedAt: now
         )
     }
@@ -346,6 +360,13 @@ actor LimitHistoryStore {
 
     private nonisolated static func isHistoryFile(_ url: URL) -> Bool {
         url.lastPathComponent.hasPrefix("limits-") && url.pathExtension == "jsonl"
+    }
+
+    private nonisolated static func isLegacyClaudeScienceRecord(
+        provider: Provider,
+        accountID: String
+    ) -> Bool {
+        provider == .claude && accountID == "claude:claude-science"
     }
 
     private nonisolated static func defaultDirectory(fileManager: FileManager) -> URL {

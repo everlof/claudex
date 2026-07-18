@@ -35,6 +35,10 @@ enum CredentialStore {
             where entry.lastPathComponent.hasPrefix(".claude-") {
                 let path = entry.standardizedFileURL.path
                 guard !seen.contains(path) else { continue }
+                // Claude Science owns ~/.claude-science as an application data root.
+                // It can contain Claude-shaped state, but it is not a Claude Code login
+                // slot and shares its signed-in member's ordinary weekly quota.
+                guard !isClaudeScienceDataDirectory(entry) else { continue }
                 let hasState = FileManager.default.fileExists(
                     atPath: entry.appending(path: ".claude.json").path
                 ) || FileManager.default.fileExists(
@@ -59,6 +63,46 @@ enum CredentialStore {
                 source: .claudeConfigDir(path: dir.standardizedFileURL.path)
             )
         }
+    }
+
+    /// Claude Science's documented default data root plus custom `--data-dir` roots
+    /// that use a ~/.claude-* name and carry its strong local runtime markers. This only
+    /// inspects entry names/types; it never reads Science credentials or project data.
+    static func claudeScienceDataDirs(
+        home: URL? = nil,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        let home = home ?? fileManager.homeDirectoryForCurrentUser
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: home,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        ) else { return [] }
+        return entries
+            .filter { $0.lastPathComponent.hasPrefix(".claude-") }
+            .filter { isClaudeScienceDataDirectory($0, fileManager: fileManager) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    static func isClaudeScienceDataDirectory(
+        _ directory: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard let values = try? directory.resourceValues(forKeys: [
+            .isDirectoryKey, .isSymbolicLinkKey,
+        ]),
+            values.isDirectory == true,
+            values.isSymbolicLink != true
+        else { return false }
+
+        // This is the product's documented and reserved default data directory.
+        if directory.lastPathComponent == ".claude-science" { return true }
+
+        // A custom Science --data-dir may have another name. Require multiple
+        // product-specific structural markers so a normal Claude Code config containing
+        // projects/sessions is never excluded merely for having common Claude files.
+        return isRegularFile(directory.appending(path: "install-id"), fileManager: fileManager)
+            && isDirectory(directory.appending(path: "runtime"), fileManager: fileManager)
+            && isDirectory(directory.appending(path: "orgs"), fileManager: fileManager)
     }
 
     // MARK: Codex
@@ -128,6 +172,7 @@ enum CredentialStore {
         let source: CredentialSource
         switch provider {
         case .claude:
+            guard !isClaudeScienceDataDirectory(directory) else { return nil }
             let hasState = FileManager.default.fileExists(
                 atPath: directory.appending(path: ".claude.json").path
             ) || FileManager.default.fileExists(
@@ -180,6 +225,24 @@ enum CredentialStore {
             url = URL(fileURLWithPath: path).deletingLastPathComponent()
         }
         return url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func isRegularFile(_ url: URL, fileManager: FileManager) -> Bool {
+        guard fileManager.fileExists(atPath: url.path),
+              let values = try? url.resourceValues(forKeys: [
+                  .isRegularFileKey, .isSymbolicLinkKey,
+              ])
+        else { return false }
+        return values.isRegularFile == true && values.isSymbolicLink != true
+    }
+
+    private static func isDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        guard fileManager.fileExists(atPath: url.path),
+              let values = try? url.resourceValues(forKeys: [
+                  .isDirectoryKey, .isSymbolicLinkKey,
+              ])
+        else { return false }
+        return values.isDirectory == true && values.isSymbolicLink != true
     }
 
     // MARK: Codex token reading (secret material — stays local to fetch)

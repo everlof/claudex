@@ -132,6 +132,11 @@ finds these local config slots without querying the Keychain:
 - the default `~/.claude`, and
 - any `~/.claude-*` directory that contains `.claude.json` or `settings.json`.
 
+The documented `~/.claude-science` application data directory is excluded. Claude
+Science uses the signed-in member's standard weekly quota; it is a separate research
+workbench and data root, not another Claude Code account slot. If an older Claudex build
+connected that directory, the app first restores its own managed status-line change.
+
 Add another login by pointing `CLAUDE_CONFIG_DIR` at a new dir and signing in there. The
 account is labelled by the directory name (minus the leading dot):
 

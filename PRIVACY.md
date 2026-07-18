@@ -5,6 +5,10 @@ Claudex is a local macOS menu-bar app.
 ## Data read locally
 
 - Claude config-directory names, to identify local account slots.
+- Names and filesystem entry types for candidate Claude Science data roots, solely to
+  exclude that separate application's data directory from account discovery and restore
+  a Claudex-owned status-line integration created by older versions. Science credentials,
+  projects, conversations, and artifacts are never read.
 - An opt-in Claude Code status-line cache containing only five-hour/weekly usage,
   reset timestamps, last-changed/last-limits-seen times, and Claude Code version.
 - When **Direct Claude refresh (Experimental)** is explicitly enabled, the

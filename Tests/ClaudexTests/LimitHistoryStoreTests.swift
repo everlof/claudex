@@ -45,6 +45,35 @@ struct LimitHistoryStoreTests {
         #expect(LimitHistoryStore.detectReset(previous: previous, current: current) == nil)
     }
 
+    @Test func hidesLegacyClaudeSciencePseudoAccountSamples() async throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appending(path: "ClaudexLimitHistoryTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? fileManager.removeItem(at: directory) }
+        let now = Date()
+        let store = LimitHistoryStore(directory: directory)
+        let account = AccountRef(
+            provider: .claude,
+            handle: "claude-science",
+            source: .claudeConfigDir(path: "/not-an-account")
+        )
+        _ = try await store.ingest(
+            account: account,
+            usage: Self.usage(
+                fraction: 0.42,
+                resetsAt: now.addingTimeInterval(5 * 60 * 60),
+                windowLength: 5 * 60 * 60
+            ),
+            observedAt: now,
+            source: .claudeStatusLine,
+            now: now
+        )
+
+        let snapshot = try await store.snapshot(since: now.addingTimeInterval(-60), now: now)
+        #expect(snapshot.samples.isEmpty)
+        #expect(snapshot.series.isEmpty)
+    }
+
     @Test func persistsOwnerOnlyJSONLAndReloadsIt() async throws {
         let fileManager = FileManager.default
         let directory = fileManager.temporaryDirectory

@@ -23,6 +23,9 @@ versioning for public releases.
   join the popover even when they do not use Claudex's conventional directory names.
 
 ### Fixed
+- Claude Science's application data root is no longer presented as a separate Claude
+  account. Any exact Claudex-managed status-line change there is restored first, and
+  legacy pseudo-account samples are hidden from Limit History.
 - A status-line event that temporarily omits Claude rate limits no longer erases the
   last successful usage snapshot; the card remains visible with a stale indicator.
 - One expired Claude window no longer invalidates another window that is still current.
