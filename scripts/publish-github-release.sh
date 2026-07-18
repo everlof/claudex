@@ -7,6 +7,8 @@ cd "$ROOT"
 ALLOW_UNNOTARIZED=0
 NOTARIZE=1
 NOTARY_PROFILE="${CLAUDEX_NOTARY_PROFILE:-mjukis-notary}"
+PUBLISH_WEBSITE=1
+MJUKIS_DEV_PATH="${MJUKIS_DEV_PATH:-/Users/david/mjukis/projects/mjukis.dev}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -18,6 +20,17 @@ while [ "$#" -gt 0 ]; do
       NOTARIZE=1
       ALLOW_UNNOTARIZED=0
       ;;
+    --skip-website)
+      PUBLISH_WEBSITE=0
+      ;;
+    --mjukis-dev-path)
+      if [ "${2:-}" = "" ]; then
+        echo "publish-github-release.sh: --mjukis-dev-path requires a value" >&2
+        exit 2
+      fi
+      MJUKIS_DEV_PATH="$2"
+      shift
+      ;;
     --notary-profile)
       if [ "${2:-}" = "" ]; then
         echo "publish-github-release.sh: --notary-profile requires a value" >&2
@@ -27,9 +40,9 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     -h|--help)
-      echo "usage: scripts/publish-github-release.sh [--notarize] [--notary-profile PROFILE] [--allow-unnotarized]"
-      echo "env: CLAUDEX_VERSION, CLAUDEX_NOTARY_PROFILE"
-      echo "default: Developer ID sign, notarize, staple, and Gatekeeper-verify"
+      echo "usage: scripts/publish-github-release.sh [--notarize] [--notary-profile PROFILE] [--allow-unnotarized] [--skip-website] [--mjukis-dev-path PATH]"
+      echo "env: CLAUDEX_VERSION, CLAUDEX_NOTARY_PROFILE, MJUKIS_DEV_PATH"
+      echo "default: Developer ID sign, notarize, staple, Gatekeeper-verify, publish GitHub release, and update mjukis.dev metadata"
       exit 0
       ;;
     *)
@@ -47,6 +60,12 @@ if [ -z "$VERSION" ]; then
 fi
 if [ -z "$VERSION" ]; then
   VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+fi
+
+if [ "$PUBLISH_WEBSITE" -eq 1 ] && [ ! -d "$MJUKIS_DEV_PATH" ]; then
+  echo "publish-github-release.sh: mjukis.dev checkout not found: $MJUKIS_DEV_PATH" >&2
+  echo "Pass --mjukis-dev-path PATH or --skip-website." >&2
+  exit 2
 fi
 
 TAG="v$VERSION"
@@ -120,8 +139,13 @@ echo "==> GitHub release asset published"
 echo "    url: $URL"
 echo "    sha256: $(shasum -a 256 "$ZIP" | awk '{print $1}')"
 echo ""
-if [ "$ALLOW_UNNOTARIZED" -eq 1 ]; then
-  echo "Next: ./scripts/publish-website-release.sh --allow-unnotarized"
+if [ "$PUBLISH_WEBSITE" -eq 1 ]; then
+  website_args=()
+  if [ "$ALLOW_UNNOTARIZED" -eq 1 ]; then
+    website_args+=(--allow-unnotarized)
+  fi
+  echo "==> update mjukis.dev release metadata"
+  MJUKIS_DEV_PATH="$MJUKIS_DEV_PATH" ./scripts/publish-website-release.sh "${website_args[@]}"
 else
-  echo "Next: ./scripts/publish-website-release.sh"
+  echo "Skipped mjukis.dev metadata update because --skip-website was passed."
 fi

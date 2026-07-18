@@ -8,19 +8,33 @@ versioning for public releases.
 ## [Unreleased]
 
 ### Added
-- An opt-in, file-only direct Claude usage refresh modeled after CodexBar. It never
-  queries Keychain, refreshes tokens, or rewrites Claude credentials, and falls back to
-  the passive local feed when no current `.credentials.json` is available.
+- An opt-in **Active Claude refresh (Experimental)** mode modeled after CodexBar. It can
+  use a current credential file or an account-specific, explicitly authorized Keychain
+  access token held only in memory. It never refreshes or rewrites credentials and falls
+  back to the passive local feed when active refresh is unavailable.
+- An opt-in **Activity Map (Beta)** window visualizes observed Claude and Codex
+  conversations as conversation → tool → repository-relative file graphs.
+- Reversible provider hooks feed a content-free, owner-only seven-day activity
+  spool; the review screen shows the complete retention and exclusion policy
+  before enabling collection.
 - A local **Limit history** window retains 180 days of Claude and Codex rate-limit
   observations, plots actual usage against linear pace, and measures capacity restored,
   above-pace headroom, and time gained when a provider resets a window early.
 - One-time local notifications report qualifying early resets and their measured gain.
+- Settings can reveal the exact running Claudex application bundle in Finder, making it
+  easier to inspect or add the correct signed build to macOS permission controls.
 
 ### Changed
 - Claude's passive feed now tracks last-limits-seen separately from last-value-change
   time, so unchanged but healthy usage stays fresh.
 - Validated `CLAUDE_CONFIG_DIR` and `CODEX_HOME` paths observed on a frontmost CLI can
   join the popover even when they do not use Claudex's conventional directory names.
+- Public GitHub release flow now updates mjukis.dev release metadata by default.
+- The signed local bridge can now sanitize provider hook events without retaining
+  prompts, responses, reasoning, commands, tool arguments/output, credentials,
+  full working-directory paths, transcript paths, or raw provider identifiers.
+- Development builds now sign correctly with an Apple Development identity on
+  Bash 3 as well as the public Developer ID release path.
 
 ### Fixed
 - Claude Science's application data root is no longer presented as a separate Claude

@@ -3,6 +3,7 @@ import Foundation
 enum LimitSampleSource: String, Codable, Sendable {
     case claudeStatusLine = "claude_status_line"
     case claudeOAuthFile = "claude_oauth_file"
+    case claudeOAuthKeychain = "claude_oauth_keychain"
     case codexAPI = "codex_api"
 }
 

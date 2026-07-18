@@ -11,9 +11,14 @@ Claudex is a local macOS menu-bar app.
   projects, conversations, and artifacts are never read.
 - An opt-in Claude Code status-line cache containing only five-hour/weekly usage,
   reset timestamps, last-changed/last-limits-seen times, and Claude Code version.
-- When **Direct Claude refresh (Experimental)** is explicitly enabled, the
+- When **Active Claude refresh (Experimental)** is explicitly enabled, the
   `.credentials.json` file inside each discovered Claude config directory. Its current
   access token and subscription label are held only inside the fetch operation.
+- When the user additionally selects a Claude account slot and clicks **Authorize
+  Keychain & Refresh**, the `Claude Code-credentials` Keychain item. The current access
+  token is held only in memory for the app run. No startup, timer, menu-open, or ordinary
+  refresh path requests secret Keychain data. Non-secret item metadata may be inspected
+  during that explicit action to select the newest candidate.
 - Codex login metadata and tokens from local `CODEX_HOME` directories.
 - Codex usage endpoint responses needed to render rate-limit state.
 - Rate-limit observations and inferred reset events used by **Limit history**, described
@@ -27,26 +32,36 @@ Claudex is a local macOS menu-bar app.
   process so that account can appear in the popover; it is not persisted.
 - Codex.app's local `account_id` when Codex is frontmost. Claude.app is recognized
   only as Claude; Claudex does not inspect its account configuration.
+- When the user explicitly enables **Activity Map (Beta)**: supported Claude Code
+  and Codex lifecycle hooks send event JSON to the signed local helper. The helper
+  retains only provider, tool name/category, observed time/outcome, project-folder
+  name, repository-relative file paths exposed by supported file tools, permission
+  requests, and hashed account/session/turn/agent/project identifiers.
 
 ## Network use
 
 By default Claudex makes no Claude/Anthropic request; Claude usage is delivered by the
-user's normal Claude Code session to a local helper. If **Direct Claude refresh
-(Experimental)** is explicitly enabled and a current credentials file exists, Claudex
-calls Anthropic's read-only `https://api.anthropic.com/api/oauth/usage` endpoint. Claudex
-also calls Codex's read-only usage endpoints. It does not operate a MJUKIS or Everlof
-server and does not upload usage data to MJUKIS.
+user's normal Claude Code session to a local helper. If **Active Claude refresh
+(Experimental)** is explicitly enabled and either a current credentials file exists or
+the user has authorized the Keychain item for an account, Claudex calls Anthropic's
+read-only `https://api.anthropic.com/api/oauth/usage` endpoint. Claudex also calls Codex's
+read-only usage endpoints. It does not operate a MJUKIS or Everlof server and does not
+upload usage data to MJUKIS.
 
 Usage history invokes only an already-installed `ccusage` executable. Claudex never
 runs `npx` or a package manager to download or update that third-party tool.
 
 ## Secrets
 
-Claudex never reads Claude Keychain items. The optional direct mode reads only the access
-token and expiry metadata from a config slot's `.credentials.json`; it never reads or uses
-the refresh token, refreshes credentials, or changes the file. Claude and Codex access
-tokens remain inside the fetch layer and are not written to logs, history, diagnostics,
-or the UI model.
+By default Claudex never reads Claude Keychain items. In the optional active mode, only
+the explicit **Authorize Keychain & Refresh** action may request Claude Code's credential
+item from macOS. Because the item is one JSON value, Claudex necessarily receives its raw
+bytes before parsing; it extracts only the current access token, expiry, and subscription
+label. It does not extract, retain, or use the refresh-token field, refresh credentials,
+or write the item. A Keychain-derived access token is kept only in memory for the current
+app run and may be reused by active background usage refreshes. Disabling the mode clears
+it immediately. Claude and Codex access tokens are not written to logs, history,
+diagnostics, or the UI model.
 
 Claude Code's raw status-line payload is never stored. The helper allowlists the four
 usage/reset values, last-changed/last-limits-seen times, and Claude Code version; it
@@ -66,7 +81,8 @@ user. Restoration metadata is never included in diagnostics or uploaded.
 Claudex automatically keeps the rate-limit values it already receives so they can be
 plotted over time. Each sample contains only observation time, provider, local account
 slot ID/label, limit-window ID/label, normalized usage fraction, reset timestamp, window
-length, and source kind (passive Claude, direct Claude file, or Codex API). An inferred
+length, and source kind (passive Claude, active Claude file, active Claude Keychain, or
+Codex API). An inferred
 reset event contains those local account/window labels, the adjacent observation times,
 old and new reset timestamps, capacity restored, elapsed fraction, above-linear fraction,
 and estimated seconds early.
@@ -83,6 +99,34 @@ timestamp. The exact reset may have happened between the last pre-reset and firs
 post-reset observation, so the displayed and notified time gain is an estimate based on
 the first observation that revealed it. Notifications are local macOS notifications.
 
+### Activity Map beta
+
+Activity Map is off by default. Its review screen lists every retained and excluded
+field before **Enable Activity Map** changes any provider configuration. Enabling adds
+one stable command hook to each discovered account's supported lifecycle events.
+Existing hook groups and handlers are preserved. Codex requires the user to review and
+trust a new command-hook definition in `/hooks`; Claudex keeps the command stable across
+normal app upgrades so its definition does not routinely change.
+
+The helper parses provider hook input in memory and discards raw input immediately.
+It never writes prompts, responses, reasoning, file contents, shell commands, tool
+arguments, tool output, credentials, full working-directory paths, transcript paths,
+or raw provider session/turn/agent identifiers. Absolute paths outside the observed
+working directory are discarded. MCP and shell arguments are never inspected for
+resources. File paths are retained only when a supported file tool provides an
+explicit in-project path or an `apply_patch` header names it.
+
+Sanitized events are kept in owner-only daily JSONL files under
+`~/Library/Application Support/Claudex/Activity/`. Each daily file is capped at 1 MiB;
+the UI reads at most 2,500 recent events and removes event files older than seven days.
+The graph therefore represents **observed supported activity**, not a guarantee that
+every filesystem or network effect was captured.
+
+Pausing removes only Claudex's exact hook handlers and retains the local graph history.
+**Delete local history** explicitly removes the event files. Owner-only installation
+metadata retains provider/configuration paths and the exact Claudex hook command so the
+app can remove its entries later; it is never included in diagnostics or uploaded.
+
 ## Diagnostics
 
 Diagnostics are generated locally and previewed in full. Nothing is uploaded or copied
@@ -90,7 +134,7 @@ until the user explicitly selects **Copy report**. Its allowlist contains the ge
 time, app version and binary SHA-256, macOS version, schema/helper health, aggregate provider
 account counts, ordinal account states/window kinds, and an active Codex backoff duration.
 The report excludes credentials, identity, config paths, working directories, sessions,
-transcripts, and content.
+transcripts, Activity Map events, file paths, tool names, and content.
 
 ## Analytics
 

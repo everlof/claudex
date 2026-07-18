@@ -49,6 +49,9 @@ Claudex is open source under the MIT license.
 - When an account reaches warning/critical pressure (or is rate limited), Claudex can
   **handoff** to a healthier login of the same provider in a fresh terminal session while
   preserving the current project directory when it can be detected.
+- An opt-in **Activity Map (Beta)** opens in a separate window and maps observed
+  conversations to tool categories and repository-relative files without retaining
+  prompts, responses, commands, tool input/output, or file contents.
 
 It uses the same local account slots as your CLIs — no separate sign-in. Nothing is
 uploaded. Claude data is passed from Claude Code through a local, opt-in status-line
@@ -96,9 +99,10 @@ Login Items**, or link it into `/Applications`:
 ln -sf "$(brew --prefix)/opt/claudex/Claudex.app" /Applications/Claudex.app
 ```
 
-Claudex does not read Claude's Keychain item. The first time you connect a Claude account,
-the app explains the local settings change, restore behavior, and retained fields before
-applying it.
+Claudex does not read Claude's Keychain item in its default mode. The first time you
+connect a Claude account, the app explains the local settings change, restore behavior,
+and retained fields before applying it. The separate experimental active-refresh mode
+has its own explicit Keychain authorization step, described below.
 
 ### Direct download
 
@@ -184,14 +188,22 @@ session ID, and transcript path. In the default mode Claudex does not call Anthr
 read Claude credentials. The cache stays in `~/Library/Application Support/Claudex/` with
 owner-only permissions.
 
-**Settings → Direct Claude refresh (Experimental)** adds the narrow file-first fallback
-used by CodexBar. When explicitly enabled, Claudex looks only for `.credentials.json`
-inside each discovered Claude config slot and uses a current access token to call
-Anthropic's read-only `/api/oauth/usage` endpoint. It never queries Keychain, uses a
-refresh token, refreshes credentials, or writes the file. Missing, unreadable, or expired
-files simply fall back to the local status-line feed. This option is useful on Claude Code
-installations that already maintain the credentials file; many current macOS installations
-store credentials only in Keychain, so the fallback will report that no file is available.
+**Settings → Active Claude refresh (Experimental)…** opens a separate review window for
+an optional fallback modeled after CodexBar. Enabling it first checks for a current
+`.credentials.json` inside each discovered Claude config slot. Missing, unreadable, or
+expired files simply fall back to the local status-line feed.
+
+For macOS installations that store Claude Code credentials only in Keychain, choose the
+local Claude account slot that the ambient Keychain login belongs to and click **Authorize
+Keychain & Refresh**. Claudex uses non-secret item metadata to select the newest stored
+candidate; that click is the only path that asks macOS for the selected
+`Claude Code-credentials` secret data. Startup, timers, menu opening, and the top-level
+refresh button never request it. Claudex extracts the current access token, holds it only
+in memory for this app run, and can reuse it for
+background calls to Anthropic's read-only `/api/oauth/usage` endpoint. The raw item may
+contain a refresh token, but Claudex does not extract, retain, or use it, never refreshes
+or writes credentials, and clears the in-memory access token when the mode is disabled,
+the token is rejected/expired, or the app quits. The passive feed remains the fallback.
 
 To make disconnect reversible, setup also keeps an owner-only restore record containing
 the Claude config path and the exact original `statusLine` object. If that command already
@@ -255,6 +267,38 @@ Samples and inferred reset events are retained locally for 180 days in owner-onl
 files under `~/Library/Application Support/Claudex/LimitHistory/`. The window's options
 menu can delete this history immediately. Nothing is uploaded.
 
+## Activity Map beta
+
+Choose **Settings → Activity Map (Beta)…** to open the standalone window. Collection is
+off by default. Before enabling it, Claudex shows the complete local retention policy and
+the provider configuration change it will make.
+
+The beta uses documented [Claude Code hooks](https://code.claude.com/docs/en/hooks) and
+[Codex hooks](https://learn.chatgpt.com/docs/hooks). A small command is merged into the
+supported lifecycle events for each discovered account. Existing hooks are preserved;
+pausing removes only the exact Claudex handlers. Codex requires a review of new command
+hooks in `/hooks`; Claudex keeps its definition stable across normal app upgrades. If a
+Codex `config.toml` already defines inline hooks,
+Claudex leaves it unchanged rather than create the duplicate hook-source warning described
+by Codex.
+
+The graph is intentionally metadata-first:
+
+- conversation nodes use hashed provider session identifiers and show only the project
+  folder name;
+- tool nodes aggregate supported reads, edits, searches, shell use, web use, MCP calls,
+  subagents, failures, and permission requests;
+- file nodes contain only repository-relative paths explicitly reported by supported file
+  tools or `apply_patch` headers;
+- raw prompts, responses, reasoning, commands, arguments, output, file contents, full
+  working-directory paths, transcript paths, credentials, and raw provider IDs are never
+  written.
+
+Events stay in owner-only daily files for seven days and never leave the Mac. Current
+provider hook coverage is not exhaustive, so the window consistently calls this
+**observed activity** rather than implying a complete audit log. See [Privacy](PRIVACY.md)
+for the exact allowlist, caps, and removal behavior.
+
 ## Design notes
 
 The codebase is deliberately **type-driven** — illegal states are unrepresentable:
@@ -273,9 +317,10 @@ Sources/Claudex/
   Model/        Domain.swift (enums/structs), WireTypes.swift (Codable DTOs)
   Services/     CredentialStore.swift (Claude config + Codex auth discovery)
                 ClaudeStatusCache.swift / ClaudeStatusLineInstaller.swift
+                ActivityHookInstaller.swift / ActivityStore.swift
                 UsageService.swift    (Codex fetcher → domain)
                 UsageStore.swift      (local Claude feed + Codex refresh/backoff)
-  UI/           Components, AccountCard, MenuContent, Formatting
+  UI/           Components, AccountCard, MenuContent, ActivityMapWindow, Formatting
   ClaudexApp.swift  (NSStatusItem + popover host)
 
 Sources/ClaudexStatusBridge/

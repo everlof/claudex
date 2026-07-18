@@ -17,8 +17,9 @@ struct AccountCard: View {
     var onHandoff: ((AccountRef) -> String?)? = nil
     /// Passive Claude Code integration state. Nil for Codex and demo fixtures.
     var claudeIntegration: ClaudeIntegrationState? = nil
-    /// Present after an opt-in, file-backed OAuth refresh succeeds for this account.
+    /// Present after an opt-in OAuth refresh succeeds for this account.
     var claudeDirectRefreshAt: Date? = nil
+    var claudeDirectRefreshSource: ClaudeDirectRefreshSource? = nil
     var claudeSettingsPath: String? = nil
     var onConnectClaude: (() -> String?)? = nil
     var onDisconnectClaude: (() -> String?)? = nil
@@ -133,7 +134,10 @@ struct AccountCard: View {
     private var content: some View {
         if provider == .claude, let refreshedAt = claudeDirectRefreshAt {
             loadStateContent
-            claudeDirectSourceRow(refreshedAt: refreshedAt)
+            claudeDirectSourceRow(
+                refreshedAt: refreshedAt,
+                source: claudeDirectRefreshSource
+            )
         } else if provider == .claude, let claudeIntegration {
             claudeContent(claudeIntegration)
         } else {
@@ -337,21 +341,28 @@ struct AccountCard: View {
         .padding(.top, 1)
     }
 
-    private func claudeDirectSourceRow(refreshedAt: Date) -> some View {
+    private func claudeDirectSourceRow(
+        refreshedAt: Date,
+        source: ClaudeDirectRefreshSource?
+    ) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.2.circlepath")
+            Image(systemName: source == .keychain ? "key.fill" : "arrow.triangle.2.circlepath")
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(provider.accentColor)
-            Text("Direct Claude refresh")
+            Text("Active Claude refresh")
                 .font(.system(size: 9.5, weight: .medium))
             Text("· updated \(Fmt.relativePast(refreshedAt, now: now))")
                 .font(.system(size: 9.5))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 3)
-            Image(systemName: "key.slash")
+            Image(systemName: source == .keychain ? "memorychip" : "key.slash")
                 .font(.system(size: 8.5))
                 .foregroundStyle(.tertiary)
-                .help("Credential file only; no Keychain access")
+                .help(
+                    source == .keychain
+                        ? "Keychain-authorized access token held only in memory for this app run"
+                        : "Credential file only; no Keychain access"
+                )
         }
         .padding(.top, 1)
     }
@@ -400,7 +411,7 @@ struct AccountCard: View {
 
     private var connectReviewText: String {
         let path = claudeSettingsPath ?? "this account’s Claude settings.json"
-        return "Claudex will update \(path) to run a small local status-line helper copied to its stable owner-only Application Support folder. An existing status-line command is chained and restored on disconnect. The documented feed requires Claude Code 2.1.80+ and a Claude.ai Pro/Max login; other authentication modes may not provide these fields.\n\nUsage cache: five-hour and weekly percentages/reset times, last-changed time, and Claude Code version. Health heartbeat: received time, last-limits-seen time, version, and whether limits were present. The raw live payload—including credentials, prompts, responses, transcripts, working directory, and session ID—is discarded.\n\nRestore backup: owner-only metadata stores this config path and the exact original statusLine/command so it can be restored. It is never included in diagnostics or uploaded. No Anthropic request is made by Claudex. Claude Code requires normal workspace trust before running status-line commands."
+        return "Claudex will update \(path) to run a small local status-line helper copied to its stable owner-only Application Support folder. An existing status-line command is chained and restored on disconnect. The documented feed requires Claude Code 2.1.80+ and a Claude.ai Pro/Max login; other authentication modes may not provide these fields.\n\nUsage cache: five-hour and weekly percentages/reset times, last-changed time, and Claude Code version. Health heartbeat: received time, last-limits-seen time, version, and whether limits were present. The raw live payload—including credentials, prompts, responses, transcripts, working directory, and session ID—is discarded.\n\nRestore backup: owner-only metadata stores this config path and the exact original statusLine/command so it can be restored. It is never included in diagnostics or uploaded. Connecting this passive feed makes no Anthropic request from Claudex. Claude Code requires normal workspace trust before running status-line commands."
     }
 
     private var isClaudeRepairReview: Bool {

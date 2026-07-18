@@ -68,7 +68,7 @@ private struct DiagnosticsPreview: View {
             )
 
             HStack {
-                Text("Excluded: credentials, identity, paths, sessions, transcripts, and content.")
+                Text("Excluded: credentials, identity, paths, sessions, Activity Map data, and content.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()

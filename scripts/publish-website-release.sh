@@ -20,7 +20,7 @@ for arg in "$@"; do
   esac
 done
 
-MJUKIS_DEV_PATH="${MJUKIS_DEV_PATH:-}"
+MJUKIS_DEV_PATH="${MJUKIS_DEV_PATH:-/Users/david/mjukis/projects/mjukis.dev}"
 if [ -z "$MJUKIS_DEV_PATH" ] || [ ! -d "$MJUKIS_DEV_PATH" ]; then
   echo "publish-website-release.sh: set MJUKIS_DEV_PATH to a mjukis.dev checkout" >&2
   exit 2

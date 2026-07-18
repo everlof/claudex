@@ -28,6 +28,14 @@ struct UsageService: Sendable {
     /// credential reader never accesses Keychain and never refreshes or rewrites tokens.
     func fetchClaudeFromCredentialsFile(_ ref: AccountRef) async throws(UsageError) -> AccountUsage {
         let credentials = try ClaudeOAuthFileCredentials.load(for: ref)
+        return try await fetchClaude(credentials: credentials)
+    }
+
+    /// Fetches with an already-authorized credential. The value is consumed inside this
+    /// method and never enters the UI model, diagnostics, history, or persistent storage.
+    func fetchClaude(
+        credentials: ClaudeOAuthFileCredentials.Value
+    ) async throws(UsageError) -> AccountUsage {
         let request = Self.claudeOAuthRequest(accessToken: credentials.accessToken)
         let response: ClaudeOAuthUsageResponse = try await getJSON(request)
         return try Self.normalizeClaudeOAuthUsage(

@@ -46,6 +46,23 @@ struct ClaudeStatusBridgeDeployment {
             .appending(path: "ClaudexStatusBridge", directoryHint: .notDirectory)
     }
 
+    /// The helper beside a SwiftPM development executable or nested in an assembled app.
+    static var bundledExecutableURL: URL {
+        let bundleCandidate = Bundle.main.bundleURL
+            .appending(path: "Contents/Helpers/ClaudexStatusBridge", directoryHint: .notDirectory)
+        if FileManager.default.isExecutableFile(atPath: bundleCandidate.path) {
+            return bundleCandidate
+        }
+        if let executable = Bundle.main.executableURL {
+            let sibling = executable.deletingLastPathComponent()
+                .appending(path: "ClaudexStatusBridge", directoryHint: .notDirectory)
+            if FileManager.default.isExecutableFile(atPath: sibling.path) {
+                return sibling
+            }
+        }
+        return bundleCandidate
+    }
+
     func deploy(from source: URL) throws(DeploymentError) {
         guard fileManager.isExecutableFile(atPath: source.path),
               let sourceValues = try? source.resourceValues(forKeys: [

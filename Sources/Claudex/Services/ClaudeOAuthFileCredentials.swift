@@ -56,13 +56,33 @@ enum ClaudeOAuthFileCredentials {
             throw .credentialUnreadable("Claude credentials file could not be read.")
         }
 
+        return try load(data: data, now: now)
+    }
+
+    /// Parses the same bounded Claude credential payload after an explicitly authorized
+    /// Keychain read. Refresh tokens and all unrelated fields are intentionally ignored.
+    static func load(data: Data, now: Date = Date()) throws(UsageError) -> Value {
+        guard !data.isEmpty, data.count <= 64 * 1024 else {
+            throw .credentialUnreadable("Claude credentials have an unexpected size.")
+        }
+
         let root: Root
         do {
             root = try JSONDecoder().decode(Root.self, from: data)
         } catch {
-            throw .credentialUnreadable("Claude credentials file has an unexpected format.")
+            throw .credentialUnreadable("Claude credentials have an unexpected format.")
         }
-        guard let oauth = root.claudeAiOauth else { throw .noCredential }
+        guard let oauth = root.claudeAiOauth else {
+            let containsOnlyMCP = (try? JSONSerialization.jsonObject(with: data))
+                .flatMap { $0 as? [String: Any] }
+                .map { $0["mcpOAuth"] != nil } == true
+            if containsOnlyMCP {
+                throw .credentialUnreadable(
+                    "Claude stored MCP credentials, but no Claude usage credential. Re-authenticate with Claude Code."
+                )
+            }
+            throw .noCredential
+        }
         let accessToken = oauth.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !accessToken.isEmpty, accessToken.count <= 16384 else {
             throw .credentialUnreadable("Claude OAuth access token is missing or malformed.")

@@ -64,16 +64,15 @@ sign_ad_hoc() {
 
 if [ -n "$SIGN_ID" ]; then
     echo "▸ Code signing with: $SIGN_ID"
-    TIMESTAMP_ARGS=()
+    SIGN_ARGS=(--force --options runtime --sign "$SIGN_ID")
     if [[ "$SIGN_ID" == "Developer ID Application:"* ]]; then
-        TIMESTAMP_ARGS=(--timestamp)
+        SIGN_ARGS+=(--timestamp)
     fi
     # Sign nested code first, then seal it into the app bundle. `--deep` signing can
     # accidentally apply the app's Apple Events entitlement to the helper.
-    if codesign --force --options runtime "${TIMESTAMP_ARGS[@]}" \
-        --sign "$SIGN_ID" "$HELPER" >/dev/null 2>&1 \
-        && codesign --force --options runtime "${TIMESTAMP_ARGS[@]}" \
-            --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$BUNDLE" >/dev/null 2>&1; then
+    if codesign "${SIGN_ARGS[@]}" "$HELPER" >/dev/null 2>&1 \
+        && codesign "${SIGN_ARGS[@]}" --entitlements "$ENTITLEMENTS" \
+            "$BUNDLE" >/dev/null 2>&1; then
         echo "  ✓ stable signature + apple-events entitlement"
     else
         if [ "$REQUIRE_SIGNING" = "1" ]; then

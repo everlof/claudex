@@ -57,8 +57,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.environment["CLAUDEX_CAPTURE"] == "1" {
             showCaptureWindow()
         }
+        if ProcessInfo.processInfo.environment["CLAUDEX_ACTIVITY_CAPTURE"] == "1" {
+            ActivityMapWindow.show(accounts: store.entries.map(\.ref))
+        }
         if ProcessInfo.processInfo.environment["CLAUDEX_LIMIT_HISTORY_CAPTURE"] == "1" {
             LimitHistoryWindow.show(history: store.limitHistory)
+        }
+        if ProcessInfo.processInfo.environment["CLAUDEX_ACTIVE_REFRESH_CAPTURE"] == "1" {
+            ClaudeActiveRefreshWindow.show(store: store)
         }
     }
 

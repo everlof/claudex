@@ -1,4 +1,5 @@
 import CoreFoundation
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -7,6 +8,8 @@ private let maximumForwardConfigBytes = 65_536
 private let maximumCommandCharacters = 16_384
 private let maximumProfileCharacters = 128
 private let maximumVersionCharacters = 128
+private let maximumActivityLogBytes = 1_048_576
+private let maximumActivityStringCharacters = 240
 
 private struct Options {
     let profile: String?
@@ -47,6 +50,45 @@ private struct Options {
         }
 
         return Options(profile: profile, forwardConfigPath: forwardConfigPath, error: error)
+    }
+}
+
+private struct ActivityOptions {
+    let provider: String?
+    let account: String?
+    let error: String?
+
+    static func parse(_ arguments: [String]) -> ActivityOptions {
+        var provider: String?
+        var account: String?
+        var error: String?
+        var index = 0
+        while index < arguments.count {
+            switch arguments[index] {
+            case "--provider":
+                guard index + 1 < arguments.count else {
+                    error = "--provider requires a value"
+                    break
+                }
+                provider = arguments[index + 1]
+                index += 2
+            case "--account":
+                guard index + 1 < arguments.count else {
+                    error = "--account requires a value"
+                    break
+                }
+                account = arguments[index + 1]
+                index += 2
+            case "--help", "-h":
+                error = "help"
+                index += 1
+            default:
+                error = "unknown activity argument: \(arguments[index])"
+                index += 1
+            }
+            if error != nil { break }
+        }
+        return ActivityOptions(provider: provider, account: account, error: error)
     }
 }
 
@@ -462,6 +504,319 @@ private func ensurePrivateDirectory(_ url: URL, fileManager: FileManager) throws
     try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
 }
 
+// MARK: - Opt-in Activity Map hook bridge
+
+private struct ActivityResourceRecord: Encodable, Hashable {
+    let path: String
+    let action: String
+}
+
+private struct ActivityRecord: Encodable {
+    let schemaVersion: Int
+    let id: String
+    let observedAt: String
+    let provider: String
+    let accountKey: String
+    let sessionKey: String
+    let turnKey: String?
+    let agentKey: String?
+    let projectKey: String
+    let projectLabel: String
+    let kind: String
+    let toolName: String?
+    let toolCategory: String?
+    let outcome: String
+    let resources: [ActivityResourceRecord]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case id
+        case observedAt = "observed_at"
+        case provider
+        case accountKey = "account_key"
+        case sessionKey = "session_key"
+        case turnKey = "turn_key"
+        case agentKey = "agent_key"
+        case projectKey = "project_key"
+        case projectLabel = "project_label"
+        case kind
+        case toolName = "tool_name"
+        case toolCategory = "tool_category"
+        case outcome
+        case resources
+    }
+}
+
+private func activityRecord(
+    from data: Data?,
+    provider: String,
+    account: String
+) -> ActivityRecord? {
+    guard let data,
+          !data.isEmpty,
+          let object = try? JSONSerialization.jsonObject(with: data),
+          let root = object as? [String: Any],
+          let rawSession = root["session_id"] as? String,
+          !rawSession.isEmpty,
+          let eventName = sanitizedActivityString(root["hook_event_name"] as? String, maximum: 80)
+    else { return nil }
+
+    let cwd = (root["cwd"] as? String).flatMap(validAbsoluteActivityPath)
+    let projectLabel = cwd
+        .map { URL(fileURLWithPath: $0, isDirectory: true).lastPathComponent }
+        .flatMap { sanitizedActivityString($0, maximum: 80) }
+        ?? "Unknown project"
+    let projectKey = activityHash(cwd ?? "unknown-project")
+    let toolName = sanitizedActivityString(root["tool_name"] as? String, maximum: 128)
+    let category = activityToolCategory(toolName: toolName, eventName: eventName)
+    let event = activityEvent(eventName)
+    let resources = activityResources(
+        toolName: toolName,
+        toolInput: root["tool_input"] as? [String: Any],
+        cwd: cwd
+    )
+
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return ActivityRecord(
+        schemaVersion: 1,
+        id: UUID().uuidString.lowercased(),
+        observedAt: formatter.string(from: Date()),
+        provider: provider,
+        accountKey: account,
+        sessionKey: activityHash(rawSession),
+        turnKey: (root["turn_id"] as? String).flatMap { $0.isEmpty ? nil : activityHash($0) },
+        agentKey: (root["agent_id"] as? String).flatMap { $0.isEmpty ? nil : activityHash($0) },
+        projectKey: projectKey,
+        projectLabel: projectLabel,
+        kind: event.kind,
+        toolName: toolName ?? (category == "agent" ? "Subagent" : nil),
+        toolCategory: category,
+        outcome: event.outcome,
+        resources: resources
+    )
+}
+
+private func activityEvent(_ eventName: String) -> (kind: String, outcome: String) {
+    switch eventName.lowercased() {
+    case "sessionstart": return ("session_start", "started")
+    case "sessionend", "stop": return ("session_end", "stopped")
+    case "posttooluse": return ("tool_completed", "succeeded")
+    case "posttoolusefailure": return ("tool_failed", "failed")
+    case "permissionrequest", "permissiondenied": return ("permission_requested", "requested")
+    case "subagentstart": return ("subagent_start", "started")
+    case "subagentstop": return ("subagent_stop", "stopped")
+    default: return ("other", "observed")
+    }
+}
+
+private func activityToolCategory(toolName: String?, eventName: String) -> String? {
+    if eventName.caseInsensitiveCompare("SubagentStart") == .orderedSame
+        || eventName.caseInsensitiveCompare("SubagentStop") == .orderedSame {
+        return "agent"
+    }
+    guard let toolName else { return nil }
+    let value = toolName.lowercased()
+    if value.hasPrefix("mcp__") { return "mcp" }
+    if value.contains("read") || value == "view_image" { return "read" }
+    if value.contains("edit") || value.contains("write") || value == "apply_patch" { return "edit" }
+    if value.contains("grep") || value.contains("glob") || value.contains("search") || value == "find" { return "search" }
+    if value.contains("bash") || value.contains("shell") || value.contains("exec") { return "shell" }
+    if value.contains("web") || value.contains("browser") || value.contains("fetch") { return "web" }
+    if value.contains("agent") || value.contains("task") { return "agent" }
+    if value.contains("ask") || value.contains("permission") { return "interaction" }
+    return "other"
+}
+
+private func activityResources(
+    toolName: String?,
+    toolInput: [String: Any]?,
+    cwd: String?
+) -> [ActivityResourceRecord] {
+    guard let toolName, let toolInput, let cwd else { return [] }
+    let category = activityToolCategory(toolName: toolName, eventName: "")
+    let action: String
+    switch category {
+    case "read": action = "read"
+    case "edit": action = "write"
+    case "search": action = "search"
+    default: return [] // In particular, never retain shell or MCP arguments.
+    }
+
+    var candidates: [String] = []
+    for key in ["file_path", "path", "notebook_path"] {
+        if let value = toolInput[key] as? String { candidates.append(value) }
+    }
+    if let values = toolInput["paths"] as? [String] { candidates.append(contentsOf: values) }
+
+    // Codex file edits arrive as an apply_patch command. Keep only its explicit file
+    // headers; patch bodies and every other command string are discarded.
+    if toolName == "apply_patch", let patch = toolInput["command"] as? String {
+        for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
+            for prefix in ["*** Add File: ", "*** Update File: ", "*** Delete File: "]
+            where line.hasPrefix(prefix) {
+                candidates.append(String(line.dropFirst(prefix.count)))
+            }
+        }
+    }
+
+    var seen = Set<String>()
+    return candidates.compactMap { candidate in
+        guard let relative = safeRelativeActivityPath(candidate, cwd: cwd),
+              seen.insert(relative).inserted
+        else { return nil }
+        return ActivityResourceRecord(path: relative, action: action)
+    }
+}
+
+private func safeRelativeActivityPath(_ candidate: String, cwd: String) -> String? {
+    guard !candidate.isEmpty,
+          candidate.count <= 4_096,
+          !candidate.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    else { return nil }
+
+    let cwdURL = URL(fileURLWithPath: cwd, isDirectory: true).standardizedFileURL
+    let candidateURL: URL
+    if (candidate as NSString).isAbsolutePath {
+        candidateURL = URL(fileURLWithPath: candidate).standardizedFileURL
+    } else {
+        candidateURL = cwdURL.appending(path: candidate).standardizedFileURL
+    }
+    let root = cwdURL.path.hasSuffix("/") ? cwdURL.path : cwdURL.path + "/"
+    guard candidateURL.path.hasPrefix(root) else { return nil }
+    let relative = String(candidateURL.path.dropFirst(root.count))
+    guard !relative.isEmpty,
+          relative.count <= maximumActivityStringCharacters,
+          !relative.split(separator: "/").contains("..")
+    else { return nil }
+    return relative
+}
+
+private func validAbsoluteActivityPath(_ value: String) -> String? {
+    guard (value as NSString).isAbsolutePath,
+          value.count <= 4_096,
+          !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    else { return nil }
+    return URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL.path
+}
+
+private func sanitizedActivityString(_ value: String?, maximum: Int) -> String? {
+    guard let value,
+          !value.isEmpty,
+          value.count <= maximum,
+          !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+    else { return nil }
+    return value
+}
+
+private func activityHash(_ value: String) -> String {
+    SHA256.hash(data: Data(value.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+}
+
+private func writeActivityRecord(_ record: ActivityRecord) {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    guard var data = try? encoder.encode(record) else { return }
+    data.append(0x0A)
+
+    let fileManager = FileManager.default
+    guard let applicationSupport = fileManager.urls(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask
+    ).first else { return }
+    let claudexDirectory = applicationSupport.appendingPathComponent("Claudex", isDirectory: true)
+    let activityDirectory = claudexDirectory.appendingPathComponent("Activity", isDirectory: true)
+    let day = DateFormatter()
+    day.locale = Locale(identifier: "en_US_POSIX")
+    day.calendar = Calendar(identifier: .gregorian)
+    day.timeZone = TimeZone(secondsFromGMT: 0)
+    day.dateFormat = "yyyy-MM-dd"
+    let destination = activityDirectory.appendingPathComponent(
+        "events-\(day.string(from: Date())).jsonl",
+        isDirectory: false
+    )
+
+    do {
+        try ensureApplicationSupportDirectory(applicationSupport, fileManager: fileManager)
+        try ensurePrivateDirectory(claudexDirectory, fileManager: fileManager)
+        try ensurePrivateDirectory(activityDirectory, fileManager: fileManager)
+    } catch { return }
+    removeExpiredActivityLogs(in: activityDirectory, fileManager: fileManager)
+
+    let descriptor = open(destination.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0o600)
+    guard descriptor >= 0 else { return }
+    defer { close(descriptor) }
+    guard flock(descriptor, LOCK_EX) == 0 else { return }
+    defer { flock(descriptor, LOCK_UN) }
+
+    var info = stat()
+    guard fstat(descriptor, &info) == 0,
+          (info.st_mode & S_IFMT) == S_IFREG,
+          info.st_size >= 0,
+          info.st_size + off_t(data.count) <= off_t(maximumActivityLogBytes)
+    else { return }
+    _ = data.withUnsafeBytes { bytes -> Bool in
+        guard let base = bytes.baseAddress else { return false }
+        var written = 0
+        while written < bytes.count {
+            let result = Darwin.write(
+                descriptor,
+                base.advanced(by: written),
+                bytes.count - written
+            )
+            guard result > 0 else { return false }
+            written += result
+        }
+        return true
+    }
+    _ = fchmod(descriptor, 0o600)
+}
+
+private func removeExpiredActivityLogs(in directory: URL, fileManager: FileManager) {
+    guard let files = try? fileManager.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+    ) else { return }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy-MM-dd"
+    guard let cutoff = formatter.calendar.date(byAdding: .day, value: -7, to: Date()) else { return }
+    for file in files where file.lastPathComponent.hasPrefix("events-")
+        && file.pathExtension == "jsonl" {
+        let name = file.deletingPathExtension().lastPathComponent
+        guard let date = formatter.date(from: String(name.dropFirst("events-".count))),
+              date < cutoff,
+              let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true
+        else { continue }
+        try? fileManager.removeItem(at: file)
+    }
+}
+
+private func runActivity(arguments: [String]) -> Never {
+    _ = umask(0o077)
+    _ = signal(SIGPIPE, SIG_IGN)
+    let options = ActivityOptions.parse(arguments)
+    guard options.error == nil,
+          let provider = options.provider,
+          provider == "claude" || provider == "codex",
+          let account = validProfile(options.account)
+    else {
+        printUsage(error: options.error ?? "activity requires --provider claude|codex and an opaque --account")
+        exit(options.error == "help" ? 0 : 64)
+    }
+    let input = captureStandardInput(forwardingTo: nil)
+    if let record = activityRecord(from: input.data, provider: provider, account: account) {
+        writeActivityRecord(record)
+    }
+    // Collection is observational. Malformed or unsupported provider events must never
+    // interrupt the agent that invoked the hook.
+    exit(0)
+}
+
 private func printStatusLine(_ status: ParsedStatus?) {
     func percentage(_ window: LimitWindow?) -> String {
         guard let value = window?.usedPercentage else { return "--" }
@@ -477,12 +832,15 @@ private func printUsage(error: String? = nil) {
     if let error, error != "help" {
         FileHandle.standardError.write(Data("ClaudexStatusBridge: \(error)\n".utf8))
     }
-    let usage = "Usage: ClaudexStatusBridge --profile <opaque-id> [--forward-config <absolute-json>]\n"
+    let usage = """
+    Usage: ClaudexStatusBridge --profile <opaque-id> [--forward-config <absolute-json>]
+           ClaudexStatusBridge activity --provider <claude|codex> --account <opaque-id>
+    """ + "\n"
     FileHandle.standardError.write(Data(usage.utf8))
 }
 
-private func run() -> Never {
-    let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
+private func runStatusLine(arguments: [String]) -> Never {
+    let options = Options.parse(arguments)
     // Spawn the user's prior status line before changing process-wide umask/SIGPIPE
     // behavior, so the chained command inherits exactly the caller's original state.
     let command = forwardCommand(at: options.forwardConfigPath).flatMap(ForwardedCommand.init(command:))
@@ -515,4 +873,9 @@ private func run() -> Never {
     exit(0)
 }
 
-run()
+let arguments = Array(CommandLine.arguments.dropFirst())
+if arguments.first == "activity" {
+    runActivity(arguments: Array(arguments.dropFirst()))
+} else {
+    runStatusLine(arguments: arguments)
+}

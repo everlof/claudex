@@ -80,6 +80,57 @@ import Testing
         #expect(String(data: result.stderr, encoding: .utf8) == "existing-error")
     }
 
+    @Test func activityModeStoresOnlyAllowlistedMetadataAndRelativePatchPaths() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let input = Data(#"""
+        {
+          "session_id":"secret-session-id",
+          "turn_id":"secret-turn-id",
+          "transcript_path":"/secret/transcript.jsonl",
+          "cwd":"/Users/secret/claudex",
+          "hook_event_name":"PostToolUse",
+          "tool_name":"apply_patch",
+          "tool_input":{"command":"*** Begin Patch\n*** Update File: Sources/App.swift\n+private let apiToken = 'secret-value'\n*** End Patch"},
+          "tool_response":{"stdout":"secret output"},
+          "prompt":"secret prompt"
+        }
+        """#.utf8)
+
+        let result = try fixture.run(
+            arguments: ["activity", "--provider", "codex", "--account", "opaque_account"],
+            input: input
+        )
+
+        #expect(result.status == 0)
+        #expect(result.stdout.isEmpty)
+        #expect(result.stderr.isEmpty)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: fixture.activityDirectory,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "jsonl" }
+        let file = try #require(files.first)
+        let stored = try String(contentsOf: file, encoding: .utf8)
+        let record = try #require(
+            try JSONSerialization.jsonObject(with: Data(stored.utf8)) as? [String: Any]
+        )
+        let resources = try #require(record["resources"] as? [[String: Any]])
+        #expect(resources.first?["path"] as? String == "Sources/App.swift")
+        #expect(stored.contains("\"tool_category\":\"edit\""))
+        #expect(stored.contains("\"project_label\":\"claudex\""))
+        #expect(!stored.contains("secret-session-id"))
+        #expect(!stored.contains("secret-turn-id"))
+        #expect(!stored.contains("/Users/secret"))
+        #expect(!stored.contains("secret-value"))
+        #expect(!stored.contains("secret output"))
+        #expect(!stored.contains("secret prompt"))
+        #expect(!stored.contains("transcript"))
+        let permissions = try #require(
+            try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+        )
+        #expect(permissions.intValue & 0o777 == 0o600)
+    }
+
     private final class Fixture {
         struct Result {
             let status: Int32
@@ -116,6 +167,10 @@ import Testing
             return try #require(
                 JSONSerialization.jsonObject(with: data) as? [String: Any]
             )
+        }
+
+        var activityDirectory: URL {
+            home.appending(path: "Library/Application Support/Claudex/Activity")
         }
 
         func run(arguments: [String], input: Data) throws -> Result {

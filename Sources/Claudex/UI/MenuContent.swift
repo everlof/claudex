@@ -62,6 +62,7 @@ struct MenuContent: View {
                                     onHandoff: { store.launch(account: $0) },
                                     claudeIntegration: store.claudeIntegration(for: entry.ref.id),
                                     claudeDirectRefreshAt: store.claudeDirectRefreshDate(for: entry.ref.id),
+                                    claudeDirectRefreshSource: store.claudeDirectRefreshSource(for: entry.ref.id),
                                     claudeSettingsPath: store.claudeSettingsPath(for: entry.ref.id),
                                     onConnectClaude: { store.connectClaude(accountID: entry.ref.id) },
                                     onDisconnectClaude: { store.disconnectClaude(accountID: entry.ref.id) },
@@ -270,12 +271,9 @@ private struct SettingsMenu: View {
                 ))
             }
             Divider()
-            Toggle("Direct Claude refresh (Experimental)", isOn: Binding(
-                get: { store.claudeDirectRefreshEnabled },
-                set: { store.setClaudeDirectRefreshEnabled($0) }
-            ))
-            if store.claudeDirectRefreshEnabled, let status = store.claudeDirectRefreshStatus {
-                Text(status)
+            Button("Active Claude refresh (Experimental)…") {
+                onOpenStandaloneWindow()
+                ClaudeActiveRefreshWindow.show(store: store)
             }
             Divider()
             Menu("Notifications") {
@@ -298,9 +296,23 @@ private struct SettingsMenu: View {
                 onOpenStandaloneWindow()
                 LimitHistoryWindow.show(history: store.limitHistory)
             }
+            Button("Activity Map (Beta)…") {
+                onOpenStandaloneWindow()
+                ActivityMapWindow.show(accounts: store.entries.map(\.ref))
+            }
+            Divider()
             Button("Preview diagnostics…") {
                 onOpenStandaloneWindow()
                 DiagnosticsWindow.show(report: store.safeDiagnosticsReport())
+            }
+            Divider()
+            Button("Show this binary in Finder") {
+                onOpenStandaloneWindow()
+                let bundleURL = Bundle.main.bundleURL
+                let selection = bundleURL.pathExtension.lowercased() == "app"
+                    ? bundleURL
+                    : (Bundle.main.executableURL ?? bundleURL)
+                NSWorkspace.shared.activateFileViewerSelecting([selection])
             }
         } label: {
             Image(systemName: "switch.2")
@@ -310,6 +322,6 @@ private struct SettingsMenu: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Menu bar appearance")
+        .help("Settings")
     }
 }

@@ -2,6 +2,11 @@ import CryptoKit
 import Foundation
 import Observation
 
+enum ClaudeDirectRefreshSource: String, Sendable {
+    case credentialsFile = "credentials_file"
+    case keychain = "keychain"
+}
+
 /// The single source of truth for the UI. Owns the list of accounts and their load
 /// states, ingests Claude's local feed, drives Codex's 5-minute auto-refresh, and exposes
 /// a throttled manual refresh.
@@ -34,11 +39,16 @@ final class UsageStore {
     var menuBarSubject: MenuBarSubject = .frontmost {
         didSet { UserDefaults.standard.set(menuBarSubject.rawValue, forKey: Self.subjectKey) }
     }
-    /// Experimental, explicit opt-in. This reads only `.credentials.json` inside each
-    /// Claude config slot; it never invokes Keychain or refreshes/writes credentials.
+    /// Experimental, explicit opt-in. File credentials may be read automatically. A
+    /// Keychain access token is read only after a dedicated user action, then held only
+    /// in memory for the current app run. Refresh tokens are never retained or used.
     private(set) var claudeDirectRefreshEnabled = false
     private(set) var claudeDirectRefreshStatus: String?
     private(set) var claudeDirectRefreshDates: [String: Date] = [:]
+    private(set) var claudeDirectRefreshSources: [String: ClaudeDirectRefreshSource] = [:]
+    @ObservationIgnored private var claudeKeychainCredentials: [
+        String: ClaudeOAuthFileCredentials.Value
+    ] = [:]
     private static let styleKey = "menuBarStyle"
     private static let subjectKey = "menuBarSubject"
     private static let claudeDirectRefreshKey = "claudeDirectRefreshEnabled"
@@ -188,6 +198,8 @@ final class UsageStore {
         retryNotBefore = retryNotBefore.filter { activeIDs.contains($0.key) }
         claudeIntegrations = claudeIntegrations.filter { activeIDs.contains($0.key) }
         claudeDirectRefreshDates = claudeDirectRefreshDates.filter { activeIDs.contains($0.key) }
+        claudeDirectRefreshSources = claudeDirectRefreshSources.filter { activeIDs.contains($0.key) }
+        claudeKeychainCredentials = claudeKeychainCredentials.filter { activeIDs.contains($0.key) }
     }
 
     /// Older Claudex builds mistook Claude Science's ~/.claude-science application data
@@ -214,10 +226,16 @@ final class UsageStore {
         claudeDirectRefreshEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.claudeDirectRefreshKey)
         if enabled {
-            claudeDirectRefreshStatus = "Checking Claude credential files…"
-            refreshNow()
+            claudeDirectRefreshStatus = "Checking credential files. Keychain access requires explicit authorization."
+            inFlight?.cancel()
+            inFlight = Task { [weak self] in
+                guard let self else { return }
+                await self.refreshAll(force: true)
+            }
         } else {
+            claudeKeychainCredentials.removeAll()
             claudeDirectRefreshDates.removeAll()
+            claudeDirectRefreshSources.removeAll()
             claudeDirectRefreshStatus = nil
             refreshClaudeStatus()
         }
@@ -225,6 +243,68 @@ final class UsageStore {
 
     func claudeDirectRefreshDate(for accountID: String) -> Date? {
         claudeDirectRefreshDates[accountID]
+    }
+
+    func claudeDirectRefreshSource(for accountID: String) -> ClaudeDirectRefreshSource? {
+        claudeDirectRefreshSources[accountID]
+    }
+
+    var claudeAccounts: [AccountRef] {
+        entries.filter { $0.ref.provider == .claude }.map(\.ref)
+    }
+
+    /// The only path that may ask macOS for access to Claude Code's Keychain item.
+    /// The user chooses the local account slot first, making the otherwise ambient
+    /// Claude credential's association explicit rather than guessing across profiles.
+    func authorizeClaudeKeychainRefresh(accountID: String) {
+        guard let account = entries.first(where: {
+            $0.ref.id == accountID && $0.ref.provider == .claude
+        })?.ref else {
+            claudeDirectRefreshStatus = "Choose a Claude account before authorizing Keychain access."
+            return
+        }
+
+        if !claudeDirectRefreshEnabled {
+            claudeDirectRefreshEnabled = true
+            UserDefaults.standard.set(true, forKey: Self.claudeDirectRefreshKey)
+        }
+        claudeDirectRefreshStatus = "Waiting for macOS Keychain authorization for Claude · \(account.handle)…"
+        inFlight?.cancel()
+        inFlight = Task { [weak self] in
+            guard let self else { return }
+            while self.isRefreshing, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard !Task.isCancelled else { return }
+
+            let result: Result<ClaudeOAuthFileCredentials.Value, UsageError> = await Task.detached(
+                priority: .userInitiated
+            ) {
+                do {
+                    return .success(try ClaudeOAuthKeychainCredentials.load())
+                } catch let error as UsageError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.credentialUnreadable("Keychain authorization failed."))
+                }
+            }.value
+
+            guard !Task.isCancelled else { return }
+            switch result {
+            case let .success(credentials):
+                // Claude Code's ambient Keychain service is not tied to a Claudex config
+                // slot. Keep at most one explicit user association per app run.
+                self.claudeKeychainCredentials.removeAll()
+                self.claudeKeychainCredentials[accountID] = credentials
+                self.claudeDirectRefreshStatus =
+                    "Keychain authorized for Claude · \(account.handle) during this app run; refreshing usage…"
+                await self.refreshAll(force: true, onlyAccountID: accountID)
+            case let .failure(error):
+                self.claudeKeychainCredentials.removeValue(forKey: accountID)
+                self.claudeDirectRefreshStatus = error.detail ?? error.headline
+                self.refreshClaudeStatus()
+            }
+        }
     }
 
     // MARK: Claude Code passive feed
@@ -696,15 +776,21 @@ final class UsageStore {
         }.map(\.ref)
         // Stagger network-backed accounts so they don't burst provider hosts simultaneously.
         let staggered = refs.enumerated().map { (index, ref) in (ref, Double(index) * 0.25) }
+        let authorizedClaudeCredentials = claudeKeychainCredentials
         let directClaudeAttemptCount = refs.count { $0.provider == .claude }
         var directClaudeSuccessCount = 0
         var directClaudeMissingCount = 0
+        var directClaudeKeychainSuccessCount = 0
+        var keychainAuthorizationInvalidated = false
         var needsPassiveClaudeRestore = false
 
-        await withTaskGroup(of: (String, Result<AccountUsage, UsageError>).self) { group in
+        await withTaskGroup(
+            of: (String, ClaudeDirectRefreshSource?, Result<AccountUsage, UsageError>).self
+        ) { group in
             for (ref, delay) in staggered {
                 let service = self.service
                 let hasPrior = entries.first(where: { $0.ref.id == ref.id })?.state.value != nil
+                let authorizedCredential = authorizedClaudeCredentials[ref.id]
                 group.addTask {
                     if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
                     // On a cold start (no prior value) a transient error like a 429 would
@@ -716,13 +802,22 @@ final class UsageStore {
                     for attempt in 0..<maxAttempts {
                         do {
                             let usage: AccountUsage
+                            let directSource: ClaudeDirectRefreshSource?
                             if ref.provider == .claude {
-                                usage = try await service.fetchClaudeFromCredentialsFile(ref)
+                                if let authorizedCredential {
+                                    usage = try await service.fetchClaude(credentials: authorizedCredential)
+                                    directSource = .keychain
+                                } else {
+                                    usage = try await service.fetchClaudeFromCredentialsFile(ref)
+                                    directSource = .credentialsFile
+                                }
                             } else {
                                 usage = try await service.fetch(ref)
+                                directSource = nil
                             }
                             return (
                                 ref.id,
+                                directSource,
                                 .success(usage)
                             )
                         } catch let error as UsageError {
@@ -736,10 +831,13 @@ final class UsageStore {
                             break
                         }
                     }
-                    return (ref.id, .failure(lastError))
+                    let attemptedSource: ClaudeDirectRefreshSource? = ref.provider == .claude
+                        ? (authorizedCredential == nil ? .credentialsFile : .keychain)
+                        : nil
+                    return (ref.id, attemptedSource, .failure(lastError))
                 }
             }
-            for await (id, result) in group {
+            for await (id, directSource, result) in group {
                 guard let idx = entries.firstIndex(where: { $0.ref.id == id }) else { continue }
                 let now = Date()
                 switch result {
@@ -750,11 +848,15 @@ final class UsageStore {
                         account: entries[idx].ref,
                         usage: usage,
                         observedAt: now,
-                        source: entries[idx].ref.provider == .claude ? .claudeOAuthFile : .codexAPI
+                        source: directSource == .keychain
+                            ? .claudeOAuthKeychain
+                            : (directSource == .credentialsFile ? .claudeOAuthFile : .codexAPI)
                     )
                     if entries[idx].ref.provider == .claude {
                         claudeDirectRefreshDates[id] = now
+                        if let directSource { claudeDirectRefreshSources[id] = directSource }
                         directClaudeSuccessCount += 1
+                        if directSource == .keychain { directClaudeKeychainSuccessCount += 1 }
                     }
                 case let .failure(error):
                     if case let .rateLimited(retryAfter) = error,
@@ -764,6 +866,15 @@ final class UsageStore {
                         retryNotBefore[id] = nil
                     }
                     if entries[idx].ref.provider == .claude {
+                        if directSource == .keychain,
+                           (error == .noCredential || error == .tokenExpired || error == .http(status: 401)) {
+                            claudeKeychainCredentials.removeValue(forKey: id)
+                            claudeDirectRefreshSources.removeValue(forKey: id)
+                            if claudeDirectRefreshDates.removeValue(forKey: id) != nil {
+                                needsPassiveClaudeRestore = true
+                            }
+                            keychainAuthorizationInvalidated = true
+                        }
                         if error == .noCredential || error == .tokenExpired {
                             directClaudeMissingCount += 1
                         }
@@ -772,6 +883,7 @@ final class UsageStore {
                             if claudeDirectRefreshDates.removeValue(forKey: id) != nil {
                                 needsPassiveClaudeRestore = true
                             }
+                            claudeDirectRefreshSources.removeValue(forKey: id)
                         case .rateLimited, .http, .network, .decoding:
                             break
                         }
@@ -794,14 +906,24 @@ final class UsageStore {
             refreshClaudeStatus()
         }
 
-        if claudeDirectRefreshEnabled, onlyAccountID == nil {
+        if claudeDirectRefreshEnabled {
             if directClaudeSuccessCount > 0 {
-                let suffix = directClaudeSuccessCount == 1 ? "account" : "accounts"
-                claudeDirectRefreshStatus = "Active for \(directClaudeSuccessCount) \(suffix); Keychain is never queried."
+                if directClaudeKeychainSuccessCount > 0 {
+                    claudeDirectRefreshStatus =
+                        "Active from Keychain for this app run. Background refresh reuses only the in-memory access token."
+                } else {
+                    let suffix = directClaudeSuccessCount == 1 ? "account" : "accounts"
+                    claudeDirectRefreshStatus =
+                        "Active from credential files for \(directClaudeSuccessCount) \(suffix); Keychain was not accessed."
+                }
+            } else if keychainAuthorizationInvalidated {
+                claudeDirectRefreshStatus =
+                    "The Keychain access token is expired or was rejected. Authorize again after refreshing the Claude Code login, or use the local feed."
             } else if !claudeDirectRefreshDates.isEmpty {
                 claudeDirectRefreshStatus = "Refresh delayed; showing the last direct snapshot."
             } else if directClaudeAttemptCount > 0, directClaudeMissingCount == directClaudeAttemptCount {
-                claudeDirectRefreshStatus = "No current credential files found; using the local feed."
+                claudeDirectRefreshStatus =
+                    "No current credential files found. Authorize Keychain for one account, or keep using the local feed."
             } else if directClaudeAttemptCount > 0 {
                 claudeDirectRefreshStatus = "Direct refresh unavailable; using the local feed."
             } else {
@@ -986,8 +1108,8 @@ final class UsageStore {
             "usage_cache_schema: 1",
             "heartbeat_schema: 2",
             "limit_history: enabled=true schema=1 retention_days=180",
-            "claude_data_sources: local_status_line,optional_direct_credentials_file",
-            "claude_direct_refresh: enabled=\(claudeDirectRefreshEnabled) active_accounts=\(claudeDirectRefreshDates.count) keychain_access=false token_refresh=false",
+            "claude_data_sources: local_status_line,optional_direct_credentials_file,optional_user_authorized_keychain",
+            "claude_direct_refresh: enabled=\(claudeDirectRefreshEnabled) active_accounts=\(claudeDirectRefreshDates.count) keychain_authorized_accounts=\(claudeKeychainCredentials.count) background_keychain_access=false token_refresh=false",
             "claude_helper_present: \(FileManager.default.isExecutableFile(atPath: claudeHelperExecutable.path))",
             "account_counts: claude=\(entries.filter { $0.ref.provider == .claude }.count) codex=\(entries.filter { $0.ref.provider == .codex }.count)",
         ]
@@ -1000,7 +1122,12 @@ final class UsageStore {
                 claudeIndex += 1
                 let windows = entry.state.value?.windows.map(\.id).joined(separator: ",") ?? "none"
                 let state = diagnosticClaudeState(claudeIntegrations[entry.ref.id], now: now)
-                let source = claudeDirectRefreshDates[entry.ref.id] == nil ? "local_feed" : "direct_file"
+                let source: String
+                switch claudeDirectRefreshSources[entry.ref.id] {
+                case .credentialsFile: source = "direct_file"
+                case .keychain: source = "direct_keychain"
+                case nil: source = "local_feed"
+                }
                 lines.append("claude[\(claudeIndex)] state=\(state) source=\(source) windows=\(windows)")
 
             case .codex:
@@ -1016,7 +1143,7 @@ final class UsageStore {
         }
 
         lines += [
-            "excluded: credentials,tokens,names,emails,config_paths,cwd,session_ids,transcripts,prompts,responses,raw_status_payload",
+            "excluded: credentials,tokens,names,emails,config_paths,cwd,session_ids,transcripts,prompts,responses,raw_status_payload,activity_events,activity_file_paths,activity_tool_names",
             "sharing: nothing is uploaded; Copy is an explicit user action",
         ]
         return lines.joined(separator: "\n") + "\n"
