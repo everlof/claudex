@@ -277,6 +277,9 @@ private struct SettingsMenu: View {
                     .disabled(!store.notifyOnReset)
             }
             Divider()
+            Button("Limit history…") {
+                LimitHistoryWindow.show(history: store.limitHistory)
+            }
             Button("Preview diagnostics…") {
                 DiagnosticsWindow.show(report: store.safeDiagnosticsReport())
             }

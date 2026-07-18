@@ -42,6 +42,8 @@ Claudex is open source under the MIT license.
   Codex refreshes every 5 minutes. Refresh-on-open and manual refresh remain available.
 - An optional usage-history chart reads an already-installed `ccusage` executable;
   Claudex never invokes `npx` or a package manager to download it automatically.
+- A local **Limit history** window plots observed Claude and Codex rate-limit usage
+  against elapsed time, detects early resets, and measures the capacity and time gained.
 - An **All Accounts** portfolio shows normalized pressure, the healthiest Claude and
   Codex login, and becomes the menu-bar fallback when the active account cannot be mapped.
 - When an account reaches warning/critical pressure (or is rate limited), Claudex can
@@ -220,6 +222,33 @@ allowlisted report before the user can copy it. It contains app/build and macOS 
 a binary fingerprint, aggregate provider counts, ordinal integration states, window kinds,
 and active Codex backoff—not identity, paths, credentials, sessions, or content. Claudex
 never uploads the report.
+
+## Limit history and early resets
+
+Choose **Settings → Limit history…** to see the rate-limit observations Claudex receives
+from the passive Claude feed, optional direct Claude refresh, and Codex usage API. This
+history starts after installing this version; past rate-limit percentages cannot be
+reconstructed from `ccusage` token/cost history.
+
+For each account and limit window, the chart compares actual usage with the fraction of
+the reset period that has elapsed. Green fill means usage is above that linear pace. When
+usage drops near zero and the provider also advances the reported reset timestamp,
+Claudex records a reset and calculates:
+
+- **Capacity restored** — the usage percentage immediately before the reset.
+- **Above linear pace** — `max(usage − elapsed time, 0)`, the extra headroom restored
+  relative to an even burn through the window.
+- **Early time gained** — the difference between the old scheduled reset and the first
+  post-reset observation.
+
+The exact reset can happen between two observations, so detection time is approximate.
+When a reset is at least 15 minutes early and meets the configured notification threshold,
+the normal short/long-window notification preferences also produce a one-time gained-
+capacity notification for both Claude and Codex.
+
+Samples and inferred reset events are retained locally for 180 days in owner-only daily
+files under `~/Library/Application Support/Claudex/LimitHistory/`. The window's options
+menu can delete this history immediately. Nothing is uploaded.
 
 ## Design notes
 

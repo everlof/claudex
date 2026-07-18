@@ -86,6 +86,10 @@ final class UsageStore {
     }
     @ObservationIgnored private var historyStore: HistoryStore?
 
+    /// Owner-only rate-limit samples used by the historical limit chart and early-reset
+    /// detector. Unlike token/cost history, these observations begin when Claudex sees them.
+    @ObservationIgnored let limitHistory = LimitHistoryStore()
+
     private let service = UsageService()
     private let claudeInstaller = ClaudeStatusLineInstaller()
     private let claudeHelperDeployment = ClaudeStatusBridgeDeployment()
@@ -435,6 +439,12 @@ final class UsageStore {
                 entries[index].state = .loaded(usage, fetchedAt: fetchedAt)
                 changed = true
             }
+            recordLimitHistory(
+                account: entries[index].ref,
+                usage: usage,
+                observedAt: fetchedAt,
+                source: .claudeStatusLine
+            )
         } else if entries[index].state.value != nil
                     || entries[index].state.stamp != nil
                     || entries[index].state.isLoading
@@ -716,6 +726,12 @@ final class UsageStore {
                 case let .success(usage):
                     retryNotBefore[id] = nil
                     entries[idx].state = .loaded(usage, fetchedAt: now)
+                    recordLimitHistory(
+                        account: entries[idx].ref,
+                        usage: usage,
+                        observedAt: now,
+                        source: entries[idx].ref.provider == .claude ? .claudeOAuthFile : .codexAPI
+                    )
                     if entries[idx].ref.provider == .claude {
                         claudeDirectRefreshDates[id] = now
                         directClaudeSuccessCount += 1
@@ -800,6 +816,48 @@ final class UsageStore {
                 longWindow: notifyLongWindow
             )
         )
+    }
+
+    /// Persist a provider observation without delaying the refresh UI. The actor
+    /// serializes passive and direct samples, ignores duplicates, and returns only newly
+    /// inferred resets, so notifications remain idempotent across repeated cache reads.
+    private func recordLimitHistory(
+        account: AccountRef,
+        usage: AccountUsage,
+        observedAt: Date,
+        source: LimitSampleSource
+    ) {
+        guard DemoMode.fixture == nil else { return }
+        let history = limitHistory
+        Task { [weak self] in
+            do {
+                let events = try await history.ingest(
+                    account: account,
+                    usage: usage,
+                    observedAt: observedAt,
+                    source: source
+                )
+                self?.notifyEarlyResets(events)
+            } catch {
+                if ProcessInfo.processInfo.environment["CLAUDEX_DEBUG_LIMIT_HISTORY"] == "1" {
+                    NSLog("[claudex] limit history write failed: %@", error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func notifyEarlyResets(_ events: [LimitResetEvent]) {
+        guard notifyOnReset else { return }
+        let qualifying = events.filter { event in
+            guard event.isEarly,
+                  event.capacityRestoredFraction >= notifyThreshold
+            else { return false }
+            if let length = event.windowLength {
+                return length <= 24 * 60 * 60 ? notifyShortWindow : notifyLongWindow
+            }
+            return notifyShortWindow || notifyLongWindow
+        }
+        notifier.notifyEarlyResets(qualifying)
     }
 
     /// Backoff before a retry, or `nil` to give up (let the next 5-min tick heal it).
@@ -907,6 +965,7 @@ final class UsageStore {
             "diagnostics_schema: 1",
             "usage_cache_schema: 1",
             "heartbeat_schema: 2",
+            "limit_history: enabled=true schema=1 retention_days=180",
             "claude_data_sources: local_status_line,optional_direct_credentials_file",
             "claude_direct_refresh: enabled=\(claudeDirectRefreshEnabled) active_accounts=\(claudeDirectRefreshDates.count) keychain_access=false token_refresh=false",
             "claude_helper_present: \(FileManager.default.isExecutableFile(atPath: claudeHelperExecutable.path))",

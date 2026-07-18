@@ -11,6 +11,10 @@ versioning for public releases.
 - An opt-in, file-only direct Claude usage refresh modeled after CodexBar. It never
   queries Keychain, refreshes tokens, or rewrites Claude credentials, and falls back to
   the passive local feed when no current `.credentials.json` is available.
+- A local **Limit history** window retains 180 days of Claude and Codex rate-limit
+  observations, plots actual usage against linear pace, and measures capacity restored,
+  above-pace headroom, and time gained when a provider resets a window early.
+- One-time local notifications report qualifying early resets and their measured gain.
 
 ### Changed
 - Claude's passive feed now tracks last-limits-seen separately from last-value-change

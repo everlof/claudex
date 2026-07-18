@@ -54,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ProcessInfo.processInfo.environment["CLAUDEX_CAPTURE"] == "1" {
             showCaptureWindow()
         }
+        if ProcessInfo.processInfo.environment["CLAUDEX_LIMIT_HISTORY_CAPTURE"] == "1" {
+            LimitHistoryWindow.show(history: store.limitHistory)
+        }
     }
 
     /// A borderless window hosting the panel, for reproducible doc/social screenshots.

@@ -5,7 +5,7 @@ import SwiftUI
 
 /// The two tools we track. Exhaustive by construction — adding a case forces every
 /// switch in the app to handle it, which is the whole point of the type-driven design.
-enum Provider: String, CaseIterable, Sendable, Identifiable {
+enum Provider: String, CaseIterable, Codable, Sendable, Identifiable {
     case claude
     case codex
 

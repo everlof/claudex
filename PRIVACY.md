@@ -12,6 +12,8 @@ Claudex is a local macOS menu-bar app.
   access token and subscription label are held only inside the fetch operation.
 - Codex login metadata and tokens from local `CODEX_HOME` directories.
 - Codex usage endpoint responses needed to render rate-limit state.
+- Rate-limit observations and inferred reset events used by **Limit history**, described
+  below. Collection begins with this version and uses only already-observed usage data.
 - Optional local `ccusage` output for historical usage charts.
 - Frontmost Terminal/iTerm tab tty plus the matching local process's provider,
   `CLAUDE_CONFIG_DIR`/`CODEX_HOME`, and working directory, when macOS grants Apple
@@ -54,6 +56,28 @@ config-directory path and exact original `statusLine` object, plus a forwarding 
 an existing command. Those values are required to chain and later restore the user's
 configuration. An original command may itself contain paths or secrets chosen by the
 user. Restoration metadata is never included in diagnostics or uploaded.
+
+### Limit history
+
+Claudex automatically keeps the rate-limit values it already receives so they can be
+plotted over time. Each sample contains only observation time, provider, local account
+slot ID/label, limit-window ID/label, normalized usage fraction, reset timestamp, window
+length, and source kind (passive Claude, direct Claude file, or Codex API). An inferred
+reset event contains those local account/window labels, the adjacent observation times,
+old and new reset timestamps, capacity restored, elapsed fraction, above-linear fraction,
+and estimated seconds early.
+
+Limit history does not contain credentials, tokens, config paths, prompts, responses,
+transcripts, session IDs, token/cost records, or raw provider payloads. It is stored in
+owner-only daily JSONL files under
+`~/Library/Application Support/Claudex/LimitHistory/`. Each daily file is capped at
+8 MiB, at most 250,000 records are loaded, and files older than 180 days are removed.
+**Settings → Limit history… → Delete local limit history** removes the files immediately.
+
+Reset detection requires both a sharp usage drop and an advance in the provider's reset
+timestamp. The exact reset may have happened between the last pre-reset and first
+post-reset observation, so the displayed and notified time gain is an estimate based on
+the first observation that revealed it. Notifications are local macOS notifications.
 
 ## Diagnostics
 
