@@ -6,6 +6,14 @@ import SwiftUI
 enum ActivityMapWindow {
     private static var window: NSWindow?
     private static var store: ActivityStore?
+    private static var closeObserver: WindowCloseObserver?
+
+    private final class WindowCloseObserver: NSObject, NSWindowDelegate {
+        func windowWillClose(_ notification: Notification) {
+            guard let closingWindow = notification.object as? NSWindow else { return }
+            ActivityMapWindow.release(closingWindow)
+        }
+    }
 
     static func show(accounts: [AccountRef]) {
         if let store { store.update(accounts: accounts) }
@@ -30,12 +38,30 @@ enum ActivityMapWindow {
         window.title = "Activity Map (Beta)"
         window.contentMinSize = NSSize(width: 760, height: 520)
         window.isReleasedWhenClosed = false
+        let closeObserver = WindowCloseObserver()
+        window.delegate = closeObserver
+        self.closeObserver = closeObserver
         window.center()
         self.window = window
         NSApp.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         writeCaptureIfRequested(view: host.view)
+    }
+
+    /// Closing must release the hosting controller. Keeping a closed window alive also
+    /// keeps SwiftUI's autoconnect timer subscribed, which previously caused invisible
+    /// Activity Map refreshes to continue indefinitely.
+    private static func release(_ closingWindow: NSWindow) {
+        guard window === closingWindow else { return }
+        closingWindow.contentViewController = nil
+        closingWindow.delegate = nil
+        window = nil
+        store = nil
+        closeObserver = nil
+        if NSApp.windows.allSatisfy({ !$0.isVisible }) {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     private static func writeCaptureIfRequested(view: NSView) {

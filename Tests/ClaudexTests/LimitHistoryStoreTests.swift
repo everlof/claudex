@@ -45,6 +45,33 @@ struct LimitHistoryStoreTests {
         #expect(LimitHistoryStore.detectReset(previous: previous, current: current) == nil)
     }
 
+    @Test func chartDownsamplingBoundsMarksAndPreservesEndpointsAndExtrema() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let spike = 1_234
+        let trough = 1_235
+        let samples = (0 ..< 3_600).map { index in
+            let fraction: Double = switch index {
+            case spike: 0.99
+            case trough: 0.01
+            default: 0.4
+            }
+            return Self.sample(
+                at: start.addingTimeInterval(TimeInterval(index * 60)),
+                fraction: fraction,
+                resetsAt: reset
+            )
+        }
+
+        let reduced = LimitHistoryViewStore.downsampleForChart(samples)
+
+        #expect(reduced.count <= 600)
+        #expect(reduced.first == samples.first)
+        #expect(reduced.last == samples.last)
+        #expect(reduced.contains(samples[spike]))
+        #expect(reduced.contains(samples[trough]))
+    }
+
     @Test func hidesLegacyClaudeSciencePseudoAccountSamples() async throws {
         let fileManager = FileManager.default
         let directory = fileManager.temporaryDirectory

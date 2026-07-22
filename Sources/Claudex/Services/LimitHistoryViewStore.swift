@@ -13,6 +13,29 @@ enum LimitHistoryRange: Int, CaseIterable, Identifiable, Sendable {
 @MainActor
 @Observable
 final class LimitHistoryViewStore {
+    private struct PreparedSeries: Sendable {
+        let samples: [LimitUsageSample]
+        let chartSamples: [LimitUsageSample]
+        let resets: [LimitResetEvent]
+        let totalCapacityRestored: Int
+        let totalPaceBonus: Int
+        let totalTimeGained: TimeInterval
+    }
+
+    private struct PreparedHistory: Sendable {
+        let series: [LimitHistorySeries]
+        let valuesBySeriesID: [String: PreparedSeries]
+    }
+
+    private struct SnapshotSignature: Equatable {
+        let sampleCount: Int
+        let firstSampleID: String?
+        let lastSampleID: String?
+        let resetCount: Int
+        let firstResetID: String?
+        let lastResetID: String?
+    }
+
     private struct DemoSeriesSpec: Sendable {
         let provider: Provider
         let accountID: String
@@ -27,57 +50,41 @@ final class LimitHistoryViewStore {
     private(set) var snapshot = LimitHistorySnapshot.empty
     private(set) var isLoading = false
     private(set) var errorMessage: String?
+    private(set) var series: [LimitHistorySeries] = []
+    private(set) var selectedSamples: [LimitUsageSample] = []
+    private(set) var chartSamples: [LimitUsageSample] = []
+    private(set) var selectedResets: [LimitResetEvent] = []
+    private(set) var latestReset: LimitResetEvent?
+    private(set) var totalCapacityRestored = 0
+    private(set) var totalPaceBonus = 0
+    private(set) var totalTimeGained: TimeInterval = 0
     var range: LimitHistoryRange = .thirtyDays {
         didSet { reload() }
     }
 
-    var selectedSeriesID: String?
+    var selectedSeriesID: String? {
+        didSet { applySelectedSeries() }
+    }
 
     @ObservationIgnored private let history: LimitHistoryStore
     @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var preparedBySeriesID: [String: PreparedSeries] = [:]
+    @ObservationIgnored private var snapshotSignature: SnapshotSignature?
+    @ObservationIgnored private var hasLoaded = false
 
     init(history: LimitHistoryStore) {
         self.history = history
     }
-
-    var series: [LimitHistorySeries] { snapshot.series }
 
     var selectedSeries: LimitHistorySeries? {
         let id = selectedSeriesID ?? series.first?.id
         return series.first { $0.id == id }
     }
 
-    var selectedSamples: [LimitUsageSample] {
-        guard let id = selectedSeries?.id else { return [] }
-        return snapshot.samples.filter { $0.seriesID == id }.sorted { $0.observedAt < $1.observedAt }
-    }
-
-    var selectedResets: [LimitResetEvent] {
-        guard let selectedSeries else { return [] }
-        return snapshot.resets.filter {
-            $0.provider == selectedSeries.provider
-                && $0.accountID == selectedSeries.accountID
-                && $0.windowID == selectedSeries.windowID
-        }.sorted { $0.detectedAt < $1.detectedAt }
-    }
-
-    var latestReset: LimitResetEvent? { selectedResets.last }
-    var totalCapacityRestored: Int {
-        Int((selectedResets.reduce(0) { $0 + $1.capacityRestoredFraction } * 100).rounded())
-    }
-
-    var totalPaceBonus: Int {
-        Int((selectedResets.reduce(0) { $0 + $1.paceBonusFraction } * 100).rounded())
-    }
-
-    var totalTimeGained: TimeInterval {
-        selectedResets.reduce(0) { $0 + $1.secondsEarly }
-    }
-
     func reload() {
         loadTask?.cancel()
-        isLoading = true
-        errorMessage = nil
+        if !hasLoaded { isLoading = true }
+        if errorMessage != nil { errorMessage = nil }
         let since = Calendar.current.date(
             byAdding: .day,
             value: -range.rawValue,
@@ -92,15 +99,39 @@ final class LimitHistoryViewStore {
                 } else {
                     try await history.snapshot(since: since)
                 }
+                let signature = Self.signature(of: value)
                 guard !Task.isCancelled, let self else { return }
+                if snapshotSignature == signature {
+                    hasLoaded = true
+                    isLoading = false
+                    return
+                }
+                let prepared = await Task.detached(priority: .utility) {
+                    Self.prepare(value)
+                }.value
+                guard !Task.isCancelled else { return }
                 snapshot = value
-                if selectedSeriesID == nil || !series.contains(where: { $0.id == selectedSeriesID }) {
+                snapshotSignature = signature
+                series = prepared.series
+                preparedBySeriesID = prepared.valuesBySeriesID
+                let selection: String
+                if let selectedSeriesID,
+                   prepared.valuesBySeriesID[selectedSeriesID] != nil
+                {
+                    selection = selectedSeriesID
+                } else {
                     if let latest = value.resets.max(by: { $0.detectedAt < $1.detectedAt }) {
-                        selectedSeriesID = "\(latest.provider.rawValue):\(latest.accountID):\(latest.windowID)"
+                        selection = "\(latest.provider.rawValue):\(latest.accountID):\(latest.windowID)"
                     } else {
-                        selectedSeriesID = series.first?.id
+                        selection = prepared.series.first?.id ?? ""
                     }
                 }
+                if selectedSeriesID == selection {
+                    applySelectedSeries()
+                } else {
+                    selectedSeriesID = selection.isEmpty ? nil : selection
+                }
+                hasLoaded = true
                 isLoading = false
             } catch {
                 guard !Task.isCancelled, let self else { return }
@@ -118,7 +149,12 @@ final class LimitHistoryViewStore {
                 try await history.deleteHistory()
                 guard let self else { return }
                 snapshot = .empty
+                snapshotSignature = nil
+                hasLoaded = true
+                series = []
+                preparedBySeriesID = [:]
                 selectedSeriesID = nil
+                applySelectedSeries()
                 errorMessage = nil
                 isLoading = false
             } catch {
@@ -127,6 +163,93 @@ final class LimitHistoryViewStore {
                 isLoading = false
             }
         }
+    }
+
+    private nonisolated static func signature(of snapshot: LimitHistorySnapshot) -> SnapshotSignature {
+        SnapshotSignature(
+            sampleCount: snapshot.samples.count,
+            firstSampleID: snapshot.samples.first?.id,
+            lastSampleID: snapshot.samples.last?.id,
+            resetCount: snapshot.resets.count,
+            firstResetID: snapshot.resets.first?.id,
+            lastResetID: snapshot.resets.last?.id
+        )
+    }
+
+    private func applySelectedSeries() {
+        guard let selectedSeriesID,
+              let prepared = preparedBySeriesID[selectedSeriesID]
+        else {
+            selectedSamples = []
+            chartSamples = []
+            selectedResets = []
+            latestReset = nil
+            totalCapacityRestored = 0
+            totalPaceBonus = 0
+            totalTimeGained = 0
+            return
+        }
+        selectedSamples = prepared.samples
+        chartSamples = prepared.chartSamples
+        selectedResets = prepared.resets
+        latestReset = prepared.resets.last
+        totalCapacityRestored = prepared.totalCapacityRestored
+        totalPaceBonus = prepared.totalPaceBonus
+        totalTimeGained = prepared.totalTimeGained
+    }
+
+    private nonisolated static func prepare(_ snapshot: LimitHistorySnapshot) -> PreparedHistory {
+        let series = snapshot.series
+        let samplesBySeries = Dictionary(grouping: snapshot.samples, by: \.seriesID)
+        let resetsBySeries = Dictionary(grouping: snapshot.resets) {
+            "\($0.provider.rawValue):\($0.accountID):\($0.windowID)"
+        }
+        let values = Dictionary(uniqueKeysWithValues: series.map { series in
+            let samples = (samplesBySeries[series.id] ?? []).sorted { $0.observedAt < $1.observedAt }
+            let resets = (resetsBySeries[series.id] ?? []).sorted { $0.detectedAt < $1.detectedAt }
+            return (series.id, PreparedSeries(
+                samples: samples,
+                chartSamples: downsampleForChart(samples),
+                resets: resets,
+                totalCapacityRestored: Int(
+                    (resets.reduce(0) { $0 + $1.capacityRestoredFraction } * 100).rounded()
+                ),
+                totalPaceBonus: Int(
+                    (resets.reduce(0) { $0 + $1.paceBonusFraction } * 100).rounded()
+                ),
+                totalTimeGained: resets.reduce(0) { $0 + $1.secondsEarly }
+            ))
+        })
+        return PreparedHistory(series: series, valuesBySeriesID: values)
+    }
+
+    /// Swift Charts performs layout on the main thread. Keep the visual shape while
+    /// placing a hard bound on marks by retaining each bucket's endpoints and extrema.
+    nonisolated static func downsampleForChart(
+        _ samples: [LimitUsageSample],
+        maximumCount: Int = 600
+    ) -> [LimitUsageSample] {
+        guard maximumCount >= 4, samples.count > maximumCount else { return samples }
+        let interiorCount = samples.count - 2
+        let bucketCount = max(1, (maximumCount - 2) / 4)
+        let bucketSize = max(1, Int(ceil(Double(interiorCount) / Double(bucketCount))))
+        var indices = [0]
+        indices.reserveCapacity(maximumCount)
+        var lower = 1
+        while lower < samples.count - 1 {
+            let upper = min(samples.count - 1, lower + bucketSize)
+            let range = lower ..< upper
+            let minimum = range.min { samples[$0].fraction < samples[$1].fraction } ?? lower
+            let maximum = range.max { samples[$0].fraction < samples[$1].fraction } ?? lower
+            for index in Set([lower, minimum, maximum, upper - 1]).sorted()
+                where indices.count < maximumCount - 1
+            {
+                indices.append(index)
+            }
+            lower = upper
+        }
+        indices.append(samples.count - 1)
+        return indices.map { samples[$0] }
     }
 
     private nonisolated static func demoSnapshot(since: Date, now: Date = Date()) -> LimitHistorySnapshot {

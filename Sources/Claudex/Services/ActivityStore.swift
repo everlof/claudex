@@ -2,6 +2,11 @@ import AppKit
 import Foundation
 import Observation
 
+struct ActivityEventSnapshot: Sendable {
+    let signature: String
+    let events: [ActivityEvent]?
+}
+
 /// Loads the sanitized Activity Map event spool and reconstructs provider conversations.
 /// Collection itself happens in the tiny signed helper, so opening this window is read-only.
 @MainActor
@@ -16,10 +21,12 @@ final class ActivityStore {
     private(set) var accounts: [AccountRef]
     private let installer: ActivityHookInstaller
     private let deployment: ClaudeStatusBridgeDeployment
-    private let fileManager: FileManager
     private let demoMode: Bool
     private var cachedEvents: [ActivityEvent] = []
     private var eventFilesSignature: String?
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingRefreshNow: Date?
+    @ObservationIgnored private var refreshGeneration = 0
 
     init(
         accounts: [AccountRef],
@@ -31,7 +38,6 @@ final class ActivityStore {
         self.accounts = accounts
         self.installer = installer ?? ActivityHookInstaller(fileManager: fileManager)
         self.deployment = deployment ?? ClaudeStatusBridgeDeployment(fileManager: fileManager)
-        self.fileManager = fileManager
         self.demoMode = demoMode
         refresh()
         if collectionEnabled, !demoMode {
@@ -125,6 +131,9 @@ final class ActivityStore {
 
     func deleteHistory() {
         do {
+            refreshGeneration += 1
+            refreshTask?.cancel()
+            pendingRefreshNow = nil
             try installer.deleteEventFiles()
             cachedEvents = []
             eventFilesSignature = nil
@@ -138,21 +147,53 @@ final class ActivityStore {
 
     func refresh(now: Date = Date()) {
         collectionEnabled = !installer.installations().isEmpty
-        let events: [ActivityEvent]
         if demoMode {
-            events = Self.demoEvents(now: now)
             collectionEnabled = true
-        } else {
-            installer.removeExpiredEventFiles(now: now)
-            let signature = currentEventFilesSignature()
-            if signature == eventFilesSignature {
-                events = cachedEvents
-            } else {
-                events = loadEvents(now: now)
-                cachedEvents = events
-                eventFilesSignature = signature
-            }
+            apply(events: Self.demoEvents(now: now), now: now)
+            return
         }
+
+        // File metadata and JSON decoding must never block SwiftUI's main thread. A busy
+        // hook spool can change continuously, so coalesce timer ticks while one snapshot
+        // is being loaded instead of allowing overlapping full refreshes.
+        installer.removeExpiredEventFiles(now: now)
+        pendingRefreshNow = now
+        startPendingRefreshIfNeeded()
+    }
+
+    private func startPendingRefreshIfNeeded() {
+        guard refreshTask == nil, let now = pendingRefreshNow else { return }
+        pendingRefreshNow = nil
+        let directory = installer.eventDirectory
+        let previousSignature = eventFilesSignature
+        let generation = refreshGeneration
+
+        refreshTask = Task { [weak self] in
+            let snapshot = await Task.detached(priority: .utility) {
+                Self.loadEventSnapshot(
+                    eventDirectory: directory,
+                    now: now,
+                    previousSignature: previousSignature
+                )
+            }.value
+            guard let self else { return }
+            self.refreshTask = nil
+            guard generation == self.refreshGeneration else {
+                self.startPendingRefreshIfNeeded()
+                return
+            }
+            if let events = snapshot.events {
+                self.cachedEvents = events
+                self.eventFilesSignature = snapshot.signature
+                self.apply(events: events, now: now)
+            } else {
+                self.lastRefresh = now
+            }
+            self.startPendingRefreshIfNeeded()
+        }
+    }
+
+    private func apply(events: [ActivityEvent], now: Date) {
         let updatedConversations = Self.conversations(from: events)
         if updatedConversations != conversations {
             conversations = updatedConversations
@@ -179,38 +220,53 @@ final class ActivityStore {
             }
     }
 
-    private func currentEventFilesSignature() -> String {
+    /// Loads at most the newest events needed by the UI. This is intentionally
+    /// nonisolated so callers can run it on a utility task rather than the main actor.
+    nonisolated static func loadEventSnapshot(
+        eventDirectory: URL,
+        now: Date,
+        previousSignature: String?
+    ) -> ActivityEventSnapshot {
+        let fileManager = FileManager()
         guard let files = try? fileManager.contentsOfDirectory(
-            at: installer.eventDirectory,
+            at: eventDirectory,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
-        ) else { return "missing" }
-        return files.compactMap { file -> String? in
+        ) else {
+            return ActivityEventSnapshot(
+                signature: "missing",
+                events: previousSignature == "missing" ? nil : []
+            )
+        }
+        let eventFiles = files.compactMap { file -> (url: URL, size: Int, modifiedAt: Date?)? in
             guard file.lastPathComponent.hasPrefix("events-"), file.pathExtension == "jsonl",
                   let values = try? file.resourceValues(forKeys: [
                     .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey,
                   ]),
                   values.isRegularFile == true,
-                  values.isSymbolicLink != true
+                  values.isSymbolicLink != true,
+                  let size = values.fileSize,
+                  size >= 0,
+                  size <= 1_048_576
             else { return nil }
-            return "\(file.lastPathComponent):\(values.fileSize ?? -1):\(values.contentModificationDate?.timeIntervalSince1970 ?? -1)"
+            return (file, size, values.contentModificationDate)
+        }
+        let signature = eventFiles.map { file in
+            "\(file.url.lastPathComponent):\(file.size):\(file.modifiedAt?.timeIntervalSince1970 ?? -1)"
         }
         .sorted()
         .joined(separator: "|")
-    }
+        guard signature != previousSignature else {
+            return ActivityEventSnapshot(signature: signature, events: nil)
+        }
 
-    private func loadEvents(now: Date) -> [ActivityEvent] {
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: installer.eventDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
-        ) else { return [] }
         let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? .distantPast
+        let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+        let standard = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let value = try container.decode(String.self)
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) {
+            if let date = (try? fractional.parse(value)) ?? (try? standard.parse(value)) {
                 return date
             }
             throw DecodingError.dataCorruptedError(
@@ -220,26 +276,24 @@ final class ActivityStore {
         }
 
         var events: [ActivityEvent] = []
-        for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
-        where file.lastPathComponent.hasPrefix("events-") && file.pathExtension == "jsonl" {
-            guard let values = try? file.resourceValues(forKeys: [
-                .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
-            ]),
-                  values.isRegularFile == true,
-                  values.isSymbolicLink != true,
-                  (values.fileSize ?? 1_048_577) <= 1_048_576,
-                  let data = try? Data(contentsOf: file, options: [.mappedIfSafe])
-            else { continue }
-            for line in data.split(separator: 0x0A).suffix(5_000) {
+        events.reserveCapacity(2_500)
+        for file in eventFiles.sorted(by: { $0.url.lastPathComponent > $1.url.lastPathComponent }) {
+            guard let data = try? Data(contentsOf: file.url, options: [.mappedIfSafe]) else { continue }
+            for line in data.split(separator: 0x0A).reversed() {
                 guard let event = try? decoder.decode(ActivityEvent.self, from: Data(line)),
                       event.schemaVersion == 1,
                       event.observedAt >= cutoff,
                       event.observedAt <= now.addingTimeInterval(300)
                 else { continue }
                 events.append(event)
+                if events.count == 2_500 { break }
             }
+            if events.count == 2_500 { break }
         }
-        return Array(events.sorted { $0.observedAt < $1.observedAt }.suffix(2_500))
+        return ActivityEventSnapshot(
+            signature: signature,
+            events: events.sorted { $0.observedAt < $1.observedAt }
+        )
     }
 
     nonisolated static func conversations(from events: [ActivityEvent]) -> [ActivityConversation] {

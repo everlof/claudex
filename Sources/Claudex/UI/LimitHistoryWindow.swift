@@ -7,6 +7,14 @@ import SwiftUI
 enum LimitHistoryWindow {
     private static var window: NSWindow?
     private static var viewStore: LimitHistoryViewStore?
+    private static var closeObserver: WindowCloseObserver?
+
+    private final class WindowCloseObserver: NSObject, NSWindowDelegate {
+        func windowWillClose(_ notification: Notification) {
+            guard let closingWindow = notification.object as? NSWindow else { return }
+            LimitHistoryWindow.release(closingWindow)
+        }
+    }
 
     static func show(history: LimitHistoryStore) {
         if let window {
@@ -29,6 +37,9 @@ enum LimitHistoryWindow {
         window.title = "Limit History"
         window.contentMinSize = NSSize(width: 720, height: 500)
         window.isReleasedWhenClosed = false
+        let closeObserver = WindowCloseObserver()
+        window.delegate = closeObserver
+        self.closeObserver = closeObserver
         window.center()
         self.window = window
         viewStore = store
@@ -36,6 +47,20 @@ enum LimitHistoryWindow {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         writeCaptureIfRequested(view: host.view)
+    }
+
+    /// Releasing the hosting controller stops the view task and its periodic refresh.
+    /// A hidden retained window must not keep rebuilding charts in the background.
+    private static func release(_ closingWindow: NSWindow) {
+        guard window === closingWindow else { return }
+        closingWindow.contentViewController = nil
+        closingWindow.delegate = nil
+        window = nil
+        viewStore = nil
+        closeObserver = nil
+        if NSApp.windows.allSatisfy({ !$0.isVisible }) {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     private static func writeCaptureIfRequested(view: NSView) {
@@ -61,7 +86,6 @@ enum LimitHistoryWindow {
 private struct LimitHistoryWindowContent: View {
     @Bindable var store: LimitHistoryViewStore
     @State private var hoveredAt: Date?
-    private let refresh = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -85,8 +109,14 @@ private struct LimitHistoryWindowContent: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(windowBackground)
-        .task { store.reload() }
-        .onReceive(refresh) { _ in store.reload() }
+        .task {
+            store.reload()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled else { return }
+                store.reload()
+            }
+        }
     }
 
     private var header: some View {
@@ -238,7 +268,7 @@ private struct LimitHistoryWindowContent: View {
                 .foregroundStyle(Severity.normal.color.opacity(0.055))
             }
 
-            ForEach(store.selectedSamples) { sample in
+            ForEach(store.chartSamples) { sample in
                 if let pace = sample.elapsedFraction(), sample.percent > pace * 100 {
                     AreaMark(
                         x: .value("Observed", sample.observedAt),
@@ -255,7 +285,7 @@ private struct LimitHistoryWindowContent: View {
                 }
             }
 
-            ForEach(store.selectedSamples) { sample in
+            ForEach(store.chartSamples) { sample in
                 if let pace = sample.elapsedFraction() {
                     LineMark(
                         x: .value("Observed", sample.observedAt),

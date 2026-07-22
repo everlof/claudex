@@ -37,6 +37,10 @@ versioning for public releases.
   Bash 3 as well as the public Developer ID release path.
 
 ### Fixed
+
+- Limit History now prepares series data off the main thread, bounds chart rendering work, and stops refreshing after its window closes.
+- Activity Map no longer decodes the entire seven-day event spool on SwiftUI's main
+  thread every two seconds, and closing its window now releases the refresh timer.
 - Claude Science's application data root is no longer presented as a separate Claude
   account. Any exact Claudex-managed status-line change there is restored first, and
   legacy pseudo-account samples are hidden from Limit History.
