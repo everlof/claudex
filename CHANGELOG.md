@@ -7,6 +7,8 @@ versioning for public releases.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-22
+
 ### Added
 - An opt-in **Active Claude refresh (Experimental)** mode modeled after CodexBar. It can
   use a current credential file or an account-specific, explicitly authorized Keychain
